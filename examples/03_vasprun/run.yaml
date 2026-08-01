@@ -1,0 +1,19 @@
+trajectory: vasprun.xml
+unitcell: POSCAR-unitcell
+supercell: POSCAR-supercell
+dim: [2, 2, 2]
+selection:
+  method: stride
+  skip: 1000
+  samples: 1000
+  center_selected: true
+force_constants:
+  orders: [2, 3]
+  rc2_A: 7.0
+  rc3_A: 4.0
+analysis:
+  band_points: 21
+  mesh: [9, 9, 9]
+  frequency_cutoff_THz: 0.05
+  gruneisen_plot_range: [-10, 20]
+
