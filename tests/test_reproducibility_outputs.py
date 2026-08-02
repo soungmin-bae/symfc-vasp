@@ -52,6 +52,8 @@ def test_reproducibility_bundle_contains_plain_data_inputs_and_scripts(tmp_path:
     assert "MASS = 58.933 2.014" in (tmp_path / "band.conf").read_text()
     assert "BAND =" in (tmp_path / "phono3py-gruneisen-band.conf").read_text()
     assert "MESH = 11 11 11" in (tmp_path / "phono3py-gruneisen-mesh.conf").read_text()
+    assert "#BAND_CONNECTION = .TRUE." in (tmp_path / "band.conf").read_text()
+    assert "#EIGENVECTORS = .TRUE." in (tmp_path / "band.conf").read_text()
     assert 'plot_terminal="qt"' in (tmp_path / "README_REPRODUCE.md").read_text()
 
 
