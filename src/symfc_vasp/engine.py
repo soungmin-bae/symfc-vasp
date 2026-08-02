@@ -15,6 +15,7 @@ import inspect
 import json
 import os
 import platform
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -29,6 +30,14 @@ from .parsers import parse_trajectory
 from .parsers.outcar import scan_outcar
 from .parsers.vasprun import count_vasprun_frames
 from .selection import select_indices
+from .reproducibility import (
+    write_band_dat,
+    write_band_gnuplot_scripts,
+    write_mesh_dat,
+    write_mesh_gnuplot_script,
+    write_phonon_inputs,
+    write_reproduction_readme,
+)
 
 
 def stage(name: str, message: str) -> None:
@@ -72,6 +81,15 @@ def apply_mass_overrides(unit, overrides: dict[str, float]) -> dict:
             symbol: float(effective[symbols.index(symbol)]) for symbol in dict.fromkeys(symbols)
         },
     }
+
+
+def link_force_constant_inputs(fit_dir: Path, output: Path) -> None:
+    """Expose FC files in analysis using portable relative symbolic links."""
+    for filename in ("FORCE_CONSTANTS", "fc2.hdf5", "fc3.hdf5"):
+        source = fit_dir / filename
+        link = output / filename
+        if source.is_file() and not link.exists() and not link.is_symlink():
+            link.symlink_to(Path(os.path.relpath(source, output)))
 
 
 def sha256(path: Path) -> str:
@@ -604,6 +622,7 @@ def write_and_plot_mesh(output, unit, qpoints, weights, frequencies, tensors, me
     fig.savefig(output / f"mode_gruneisen_qmesh_{mesh_tag}.pdf")
     fig.savefig(output / f"mode_gruneisen_qmesh_{mesh_tag}.png", dpi=180)
     plt.close(fig)
+    return rows
 
 def postprocess(
     args,
@@ -621,7 +640,9 @@ def postprocess(
     fit_dir = (fit_dir or args.fit_dir).resolve()
     output = args.analysis_output.resolve()
     output.mkdir(parents=True, exist_ok=True)
+    link_force_constant_inputs(fit_dir, output)
     unit = read_vasp(str(fit_dir / "POSCAR-unitcell"))
+    shutil.copy2(fit_dir / "POSCAR-unitcell", output / "POSCAR-unitcell")
     mass_summary = apply_mass_overrides(unit, parse_mass_overrides(args.mass))
     if mass_summary["overrides_amu"]:
         stage("mass", f"Applying isotope mass overrides (amu): {mass_summary['overrides_amu']}")
@@ -647,6 +668,16 @@ def postprocess(
         rows, boundaries, labels = flatten_band(gr, labels)
         stage("gruneisen", "Writing the band-path tensor mode-Gruneisen data")
         write_band_tsv(output / "mode_gruneisen_qpath.tsv", rows)
+        write_band_dat(output / "phonon_band.dat", rows)
+        write_phonon_inputs(
+            output, segments, labels, args.dim, args.band_points, args.mesh,
+            unit.masses,
+        )
+        write_band_gnuplot_scripts(
+            output, boundaries, labels, args.gmin, args.gmax,
+            args.fmin_cm1, args.fmax_cm1, args.frequency_cutoff,
+        )
+        write_reproduction_readme(output, args.mesh)
         gr.write(filename=str(output / "gruneisen-band"))
         plot_band_results(
             rows, boundaries, labels, output, args.gmin, args.gmax,
@@ -694,16 +725,28 @@ def postprocess(
             gamma_trace_over_3=np.trace(tensors, axis1=2, axis2=3) / 3,
         )
         stage("plot", f"Writing {mesh_tag} q-mesh mode-Gruneisen plot")
-        write_and_plot_mesh(
+        mesh_rows = write_and_plot_mesh(
             output, unit, qpoints, weights, frequencies, tensors, args.mesh,
             args.gmin, args.gmax, args.frequency_cutoff,
         )
+        write_mesh_dat(output / f"gruneisen_qmesh_{mesh_tag}.dat", mesh_rows)
+        write_mesh_gnuplot_script(
+            output, args.mesh, args.gmin, args.gmax, args.frequency_cutoff,
+        )
+        write_reproduction_readme(output, args.mesh)
         summary["mesh"] = {
             "mesh": list(args.mesh),
             "irreducible_qpoints": int(len(qpoints)),
             "modes": int(frequencies.shape[1]),
             "tensor_shape": list(tensors.shape),
         }
+    summary["reproducibility"] = {
+        "phonopy_input": "band.conf" if do_band else None,
+        "phono3py_band_input": "phono3py-gruneisen-band.conf" if do_band else None,
+        "phono3py_mesh_input": "phono3py-gruneisen-mesh.conf" if do_band else None,
+        "gnuplot_terminal_default": "pdfcairo",
+        "gnuplot_terminal_override_example": "gnuplot -e 'plot_terminal=\"qt\"' SCRIPT.gp",
+    }
 
     with summary_path.open("w") as handle:
         yaml.safe_dump(summary, handle, sort_keys=False)
@@ -718,9 +761,12 @@ def render_existing(args) -> Path:
 
     fit_dir = args.fit_dir.resolve()
     output = args.analysis_output.resolve()
+    link_force_constant_inputs(fit_dir, output)
+    shutil.copy2(fit_dir / "POSCAR-unitcell", output / "POSCAR-unitcell")
     rows = np.loadtxt(output / "mode_gruneisen_qpath.tsv")
     unit = read_vasp(str(fit_dir / "POSCAR-unitcell"))
-    _, labels = seekpath_segments(unit, args.band_points)
+    mass_summary = apply_mass_overrides(unit, parse_mass_overrides(args.mass))
+    segments, labels = seekpath_segments(unit, args.band_points)
     segment_ids = np.unique(rows[:, 0].astype(int))
     boundaries = [float(np.min(rows[rows[:, 0] == segment_ids[0], 2]))]
     boundaries.extend(float(np.max(rows[rows[:, 0] == segment, 2])) for segment in segment_ids)
@@ -728,6 +774,36 @@ def render_existing(args) -> Path:
         rows, np.asarray(boundaries), labels, output,
         args.gmin, args.gmax, args.fmin_cm1, args.fmax_cm1, args.frequency_cutoff,
     )
+    write_band_dat(output / "phonon_band.dat", rows)
+    write_band_gnuplot_scripts(
+        output, boundaries, labels, args.gmin, args.gmax,
+        args.fmin_cm1, args.fmax_cm1, args.frequency_cutoff,
+    )
+    write_phonon_inputs(
+        output, segments, labels, args.dim, args.band_points, args.mesh,
+        unit.masses,
+    )
+    mesh_tag = "x".join(str(int(value)) for value in args.mesh)
+    mesh_tsv = output / f"gruneisen_qmesh_{mesh_tag}.tsv"
+    if mesh_tsv.is_file():
+        mesh_rows = np.loadtxt(mesh_tsv)
+        write_mesh_dat(output / f"gruneisen_qmesh_{mesh_tag}.dat", mesh_rows)
+        write_mesh_gnuplot_script(
+            output, args.mesh, args.gmin, args.gmax, args.frequency_cutoff,
+        )
+    write_reproduction_readme(output, args.mesh)
+    summary_path = output / "analysis_summary.yaml"
+    summary = yaml.safe_load(summary_path.read_text()) or {} if summary_path.is_file() else {}
+    summary["masses"] = mass_summary
+    summary["reproducibility"] = {
+        "phonopy_input": "band.conf",
+        "phono3py_band_input": "phono3py-gruneisen-band.conf",
+        "phono3py_mesh_input": "phono3py-gruneisen-mesh.conf",
+        "gnuplot_terminal_default": "pdfcairo",
+        "gnuplot_terminal_override_example": "gnuplot -e 'plot_terminal=\"qt\"' SCRIPT.gp",
+    }
+    with summary_path.open("w") as handle:
+        yaml.safe_dump(summary, handle, sort_keys=False)
     print(f"Band plots regenerated in {output}")
     return output
 

@@ -206,6 +206,13 @@ def validate(run_dir: Path, reference: Path | None = None) -> dict:
         analysis / "mode_gruneisen_q_resolved.pdf", analysis / "mode_gruneisen_q_resolved.png",
         analysis / "mode_gruneisen_on_phonon_dispersion.pdf", analysis / "mode_gruneisen_on_phonon_dispersion.png",
         analysis / f"mode_gruneisen_qmesh_{mesh_tag}.pdf", analysis / f"mode_gruneisen_qmesh_{mesh_tag}.png",
+        analysis / "band.conf", analysis / "phono3py-gruneisen-band.conf",
+        analysis / "phono3py-gruneisen-mesh.conf", analysis / "phonon_band.dat",
+        analysis / f"gruneisen_qmesh_{mesh_tag}.dat", analysis / "README_REPRODUCE.md",
+        analysis / "plot_phonon_dispersion.gp",
+        analysis / "plot_mode_gruneisen_q_resolved.gp",
+        analysis / "plot_mode_gruneisen_on_phonon_dispersion.gp",
+        analysis / "plot_mode_gruneisen_qmesh.gp",
     ]
     if 3 in orders:
         required.append(fit_dir / "fc3.hdf5")

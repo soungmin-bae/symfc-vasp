@@ -176,8 +176,31 @@ run_N3000/
     ├── mode_gruneisen_q_resolved.pdf
     ├── mode_gruneisen_on_phonon_dispersion.pdf
     ├── gruneisen_qmesh_11x11x11.hdf5
-    └── mode_gruneisen_qmesh_11x11x11.pdf
+    ├── mode_gruneisen_qmesh_11x11x11.pdf
+    ├── band.conf
+    ├── phono3py-gruneisen-band.conf
+    ├── phono3py-gruneisen-mesh.conf
+    ├── phonon_band.dat
+    ├── gruneisen_qmesh_11x11x11.dat
+    ├── plot_phonon_dispersion.gp
+    ├── plot_mode_gruneisen_q_resolved.gp
+    ├── plot_mode_gruneisen_on_phonon_dispersion.gp
+    ├── plot_mode_gruneisen_qmesh.gp
+    └── README_REPRODUCE.md
 ```
+
+The analysis directory is a reproducible postprocessing bundle. The `.dat`
+files are human-readable and directly usable by gnuplot. Each `.gp` script
+defaults to PDF and can be opened interactively with, for example:
+
+```bash
+gnuplot plot_phonon_dispersion.gp
+gnuplot -e 'plot_terminal="qt"' plot_phonon_dispersion.gp
+```
+
+Relative links to `FORCE_CONSTANTS`, `fc2.hdf5`, and `fc3.hdf5` are created
+automatically. Together with `POSCAR-unitcell` and the generated configuration
+files, they permit independent phonopy and phono3py reruns from `analysis/`.
 
 ## Parallel execution
 
