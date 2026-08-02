@@ -177,6 +177,7 @@ run_N3000/
     ├── mode_gruneisen_on_phonon_dispersion.pdf
     ├── gruneisen_qmesh_11x11x11.hdf5
     ├── mode_gruneisen_qmesh_11x11x11.pdf
+    ├── phonopy_disp.yaml
     ├── band.conf
     ├── phono3py-gruneisen-band.conf
     ├── phono3py-gruneisen-mesh.conf
@@ -201,6 +202,12 @@ gnuplot -e 'plot_terminal="qt"' plot_phonon_dispersion.gp
 Relative links to `FORCE_CONSTANTS`, `fc2.hdf5`, and `fc3.hdf5` are created
 automatically. Together with `POSCAR-unitcell` and the generated configuration
 files, they permit independent phonopy and phono3py reruns from `analysis/`.
+`phonopy_disp.yaml` embeds the unit cell, supercell matrix, effective masses,
+and fitted FC2, so the standard phonopy command works directly:
+
+```bash
+phonopy -p band.conf -s
+```
 
 ## Parallel execution
 

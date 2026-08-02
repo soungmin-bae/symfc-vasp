@@ -8,6 +8,7 @@ from symfc_vasp.reproducibility import (
     write_mesh_dat,
     write_mesh_gnuplot_script,
     write_phonon_inputs,
+    write_phonopy_yaml,
     write_reproduction_readme,
 )
 
@@ -52,3 +53,22 @@ def test_reproducibility_bundle_contains_plain_data_inputs_and_scripts(tmp_path:
     assert "BAND =" in (tmp_path / "phono3py-gruneisen-band.conf").read_text()
     assert "MESH = 11 11 11" in (tmp_path / "phono3py-gruneisen-mesh.conf").read_text()
     assert 'plot_terminal="qt"' in (tmp_path / "README_REPRODUCE.md").read_text()
+
+
+def test_phonopy_yaml_contains_supercell_masses_and_force_constants(tmp_path: Path):
+    from phonopy.interface.vasp import read_vasp_from_strings
+    from phonopy.interface.phonopy_yaml import PhonopyYaml
+
+    unit = read_vasp_from_strings(
+        """H\n1.0\n2 0 0\n0 2 0\n0 0 2\nH\n1\nDirect\n0 0 0\n"""
+    )
+    unit.masses = [2.014]
+    fc2 = np.zeros((8, 8, 3, 3))
+    path = write_phonopy_yaml(tmp_path, unit, [2, 2, 2], fc2, symprec=1e-5)
+
+    yaml_data = PhonopyYaml()
+    yaml_data.read(path)
+    assert path.name == "phonopy_disp.yaml"
+    assert yaml_data.supercell_matrix.tolist() == [[2, 0, 0], [0, 2, 0], [0, 0, 2]]
+    assert np.asarray(yaml_data.force_constants).shape == (8, 8, 3, 3)
+    assert yaml_data.unitcell.masses.tolist() == [2.014]

@@ -10,6 +10,29 @@ import numpy as np
 CM1_PER_THZ = 33.35640951981521
 
 
+def write_phonopy_yaml(
+    output: Path,
+    unitcell,
+    dim,
+    force_constants: np.ndarray,
+    *,
+    symprec: float,
+) -> Path:
+    """Write a self-contained phonopy YAML file containing the fitted FC2."""
+    from phonopy import Phonopy
+
+    phonon = Phonopy(
+        unitcell,
+        supercell_matrix=np.diag(np.asarray(dim, dtype=int)),
+        primitive_matrix="auto",
+        symprec=symprec,
+    )
+    phonon.force_constants = np.asarray(force_constants, dtype=float)
+    path = output / "phonopy_disp.yaml"
+    phonon.save(filename=path, settings={"force_constants": True})
+    return path
+
+
 def _qpath_text(segments) -> str:
     return ", ".join(
         " ".join(f"{value:.10g}" for value in np.concatenate((segment[0], segment[-1])))
@@ -134,9 +157,8 @@ def write_phonon_inputs(
     command = '''#!/usr/bin/env bash
 set -euo pipefail
 
-# Required files in this directory:
-# POSCAR-unitcell, FORCE_CONSTANTS, fc2.hdf5, and fc3.hdf5.
-phonopy band.conf -c POSCAR-unitcell --readfc
+# phonopy_disp.yaml contains the cell, supercell matrix, masses, and FC2.
+phonopy -p band.conf -s
 phonopy-bandplot --gnuplot band.yaml > phonopy-band.dat
 phono3py phono3py-gruneisen-band.conf -c POSCAR-unitcell --fc2 --fc3
 phono3py phono3py-gruneisen-mesh.conf -c POSCAR-unitcell --fc2 --fc3
@@ -289,7 +311,8 @@ gnuplot -e 'plot_terminal="qt"' plot_phonon_dispersion.gp
 ```
 
 The q-path data are in `phonon_band.dat`; the mesh data are in
-`gruneisen_qmesh_{mesh_tag}.dat`. `band.conf` and
+`gruneisen_qmesh_{mesh_tag}.dat`. `phonopy_disp.yaml` contains the unit cell,
+supercell matrix, effective masses, and fitted FC2. `band.conf` and
 `phono3py-gruneisen-band.conf` and `phono3py-gruneisen-mesh.conf` record the
 external phonopy/phono3py settings.
 To rerun those programs, link or copy `FORCE_CONSTANTS`, `fc2.hdf5`, and

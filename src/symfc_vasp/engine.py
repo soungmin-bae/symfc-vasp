@@ -36,6 +36,7 @@ from .reproducibility import (
     write_mesh_dat,
     write_mesh_gnuplot_script,
     write_phonon_inputs,
+    write_phonopy_yaml,
     write_reproduction_readme,
 )
 
@@ -652,6 +653,9 @@ def postprocess(
     fc3 = read_fc3_from_hdf5(filename=str(fit_dir / "fc3.hdf5"))
     ph3.fc2 = fc2
     ph3.fc3 = fc3
+    write_phonopy_yaml(
+        output, unit, args.dim, fc2, symprec=args.symprec,
+    )
 
     gr = Gruneisen(fc2=fc2, fc3=fc3, supercell=ph3.supercell, primitive=ph3.primitive, symprec=args.symprec)
     summary_path = output / "analysis_summary.yaml"
@@ -741,6 +745,7 @@ def postprocess(
             "tensor_shape": list(tensors.shape),
         }
     summary["reproducibility"] = {
+        "phonopy_yaml": "phonopy_disp.yaml",
         "phonopy_input": "band.conf" if do_band else None,
         "phono3py_band_input": "phono3py-gruneisen-band.conf" if do_band else None,
         "phono3py_mesh_input": "phono3py-gruneisen-mesh.conf" if do_band else None,
@@ -758,6 +763,7 @@ def postprocess(
 def render_existing(args) -> Path:
     """Regenerate band plots from an existing mode_gruneisen_qpath.tsv."""
     from phonopy.interface.vasp import read_vasp
+    from phono3py.file_IO import read_fc2_from_hdf5
 
     fit_dir = args.fit_dir.resolve()
     output = args.analysis_output.resolve()
@@ -766,6 +772,10 @@ def render_existing(args) -> Path:
     rows = np.loadtxt(output / "mode_gruneisen_qpath.tsv")
     unit = read_vasp(str(fit_dir / "POSCAR-unitcell"))
     mass_summary = apply_mass_overrides(unit, parse_mass_overrides(args.mass))
+    fc2 = read_fc2_from_hdf5(filename=str(fit_dir / "fc2.hdf5"))
+    write_phonopy_yaml(
+        output, unit, args.dim, fc2, symprec=args.symprec,
+    )
     segments, labels = seekpath_segments(unit, args.band_points)
     segment_ids = np.unique(rows[:, 0].astype(int))
     boundaries = [float(np.min(rows[rows[:, 0] == segment_ids[0], 2]))]
@@ -796,6 +806,7 @@ def render_existing(args) -> Path:
     summary = yaml.safe_load(summary_path.read_text()) or {} if summary_path.is_file() else {}
     summary["masses"] = mass_summary
     summary["reproducibility"] = {
+        "phonopy_yaml": "phonopy_disp.yaml",
         "phonopy_input": "band.conf",
         "phono3py_band_input": "phono3py-gruneisen-band.conf",
         "phono3py_mesh_input": "phono3py-gruneisen-mesh.conf",
