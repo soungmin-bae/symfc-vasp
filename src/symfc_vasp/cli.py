@@ -74,6 +74,12 @@ def _config_tokens(command: str, path: Path) -> list[str]:
     if command in analysis_commands:
         if command != "run":
             _append(tokens, "--dim", data.get("dim"))
+        mass_overrides = data.get("mass_overrides", {}) or {}
+        if mass_overrides:
+            mass_values = []
+            for symbol, mass in mass_overrides.items():
+                mass_values.extend((symbol, mass))
+            _append(tokens, "--mass", mass_values)
         analysis = data.get("analysis", {})
         _append(tokens, "--band-points", analysis.get("band_points"))
         _append(tokens, "--mesh", analysis.get("mesh"))
@@ -144,6 +150,7 @@ def parser() -> argparse.ArgumentParser:
     run.add_argument("--frequency-cutoff", type=float, default=0.05)
     run.add_argument("--fmin-cm1", type=float, default=-100.0)
     run.add_argument("--fmax-cm1", type=float, default=2300.0)
+    engine.add_mass_overrides(run)
     status = commands.add_parser("status", help="Report outputs present in a run directory")
     status.add_argument("run_dir", type=Path, nargs="?", default=Path("."))
     validate = commands.add_parser("validate", help="Validate a completed run")
@@ -271,6 +278,7 @@ def main(argv=None):
                     "unitcell": str(args.unitcell.resolve()),
                     "supercell": str(args.supercell.resolve()),
                     "dim": list(args.dim),
+                    "mass_overrides": engine.parse_mass_overrides(args.mass),
                     "selection": {
                         "method": args.selection, "skip": args.skip,
                         "samples": args.samples, "stride": args.stride, "seed": args.seed,

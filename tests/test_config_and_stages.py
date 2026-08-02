@@ -13,6 +13,7 @@ def write_config(path: Path) -> None:
                 "unitcell": "/case/POSCAR-unitcell",
                 "supercell": "/case/POSCAR",
                 "dim": [2, 2, 2],
+                "mass_overrides": {"H": 2.014},
                 "selection": {
                     "method": "uniform",
                     "skip": 5000,
@@ -54,6 +55,7 @@ def test_run_yaml_is_reusable_and_cli_wins(tmp_path):
     assert args.center_selected is True
     assert args.mesh == [11, 11, 11]
     assert args.gmin == -10
+    assert args.mass == ["H", "2.014"]
     assert args.output == Path("rerun")
 
 
@@ -70,6 +72,7 @@ def test_split_stage_parsers_load_relevant_config(tmp_path):
     assert fit.samples == 3000
     assert fit.rc3 == 4.0
     assert band.band_points == 21
+    assert band.mass == ["H", "2.014"]
     assert band.fmin_cm1 == -800
     assert mesh.mesh == [11, 11, 11]
 
@@ -79,3 +82,13 @@ def test_centering_is_enabled_by_default_and_can_be_disabled():
     disabled = parser().parse_args(["fit", "--no-center-selected"])
     assert default.center_selected is True
     assert disabled.center_selected is False
+
+
+def test_cli_mass_override_wins_over_run_yaml(tmp_path):
+    config = tmp_path / "run.yaml"
+    write_config(config)
+    argv = expand_config_argv(
+        ["band", "--config", str(config), "--mass", "H", "3.0"]
+    )
+    args = parser().parse_args(argv)
+    assert args.mass == ["H", "3.0"]

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "symfc-vasp"
-version = "0.1.0"
+version = "0.1.1"
 description = "Fit finite-temperature force constants from VASP molecular-dynamics trajectories"
 readme = "README.md"
 requires-python = ">=3.10"

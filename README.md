@@ -18,7 +18,7 @@ project.
 Install from a source checkout:
 
 ```bash
-git clone https://github.com/OWNER/symfc-vasp.git
+git clone https://github.com/soungmin-bae/symfc-vasp.git
 cd symfc-vasp
 python -m pip install .
 ```
@@ -36,9 +36,6 @@ Confirm the installation:
 symfc-vasp --version
 symfc-vasp --help
 ```
-
-Replace `OWNER` with the GitHub account or organization after the repository
-is published.
 
 ## Required input
 
@@ -84,9 +81,24 @@ symfc-vasp run \
   --selection uniform \
   --order 2 3 \
   --rc2 7 --rc3 4 \
+  --mass H 2.014 \
   --mesh 11 11 11 \
   --output run_N3000
 ```
+
+`--mass` changes the isotope mass used by phonopy and phono3py without
+changing the element labels or refitting FC2/FC3. For a deuterated trajectory
+whose POSCAR still labels the isotope as H, use `--mass H 2.014`. The resolved
+`run.yaml` stores this as:
+
+```yaml
+mass_overrides:
+  H: 2.014
+```
+
+The applied and default masses are also recorded in
+`analysis/analysis_summary.yaml`. This makes H/D mass postprocessing explicit
+and reproducible.
 
 Selected configurations are centered by default. Per-atom mean displacement
 and mean force are removed so that the fitted force constants describe
@@ -181,4 +193,3 @@ symfc-vasp fit --config run.yaml --output run/force_constants
 ```
 
 Portable examples are provided under [`examples/`](examples/).
-

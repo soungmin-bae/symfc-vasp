@@ -36,6 +36,44 @@ def stage(name: str, message: str) -> None:
     print(f"[{name}] {message}", flush=True)
 
 
+def parse_mass_overrides(values: list[str] | tuple[str, ...] | None) -> dict[str, float]:
+    """Parse ``Symbol Mass`` pairs and validate positive finite masses."""
+    if not values:
+        return {}
+    if len(values) % 2:
+        raise ValueError("--mass requires Symbol Mass pairs, e.g. --mass H 2.014")
+    overrides: dict[str, float] = {}
+    for symbol, raw_mass in zip(values[::2], values[1::2]):
+        mass = float(raw_mass)
+        if not symbol or not np.isfinite(mass) or mass <= 0:
+            raise ValueError(f"Invalid atomic mass override: {symbol!r} {raw_mass!r}")
+        overrides[str(symbol)] = mass
+    return overrides
+
+
+def apply_mass_overrides(unit, overrides: dict[str, float]) -> dict:
+    """Apply isotope masses to a phonopy unit cell and return provenance."""
+    symbols = list(unit.symbols)
+    original = np.asarray(unit.masses, dtype=float)
+    missing = sorted(set(overrides) - set(symbols))
+    if missing:
+        raise ValueError(f"Mass override symbols not present in unit cell: {', '.join(missing)}")
+    effective = np.asarray(
+        [overrides.get(symbol, mass) for symbol, mass in zip(symbols, original)],
+        dtype=float,
+    )
+    unit.masses = effective
+    return {
+        "overrides_amu": dict(overrides),
+        "original_by_species_amu": {
+            symbol: float(original[symbols.index(symbol)]) for symbol in dict.fromkeys(symbols)
+        },
+        "effective_by_species_amu": {
+            symbol: float(effective[symbols.index(symbol)]) for symbol in dict.fromkeys(symbols)
+        },
+    }
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -584,6 +622,9 @@ def postprocess(
     output = args.analysis_output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     unit = read_vasp(str(fit_dir / "POSCAR-unitcell"))
+    mass_summary = apply_mass_overrides(unit, parse_mass_overrides(args.mass))
+    if mass_summary["overrides_amu"]:
+        stage("mass", f"Applying isotope mass overrides (amu): {mass_summary['overrides_amu']}")
     dim = np.diag(args.dim)
     ph3 = Phono3py(unit, supercell_matrix=dim, primitive_matrix="auto", symprec=args.symprec)
     fc2 = read_fc2_from_hdf5(filename=str(fit_dir / "fc2.hdf5"))
@@ -595,6 +636,7 @@ def postprocess(
     summary_path = output / "analysis_summary.yaml"
     summary = yaml.safe_load(summary_path.read_text()) or {} if summary_path.is_file() else {}
     summary["software"] = versions()
+    summary["masses"] = mass_summary
 
     if do_band:
         stage("phonon", "Building the high-symmetry q path with seekpath")
@@ -744,6 +786,16 @@ def add_analysis(parser):
     parser.add_argument("--frequency-cutoff", type=float, default=0.05)
     parser.add_argument("--fmin-cm1", type=float, default=-100.0)
     parser.add_argument("--fmax-cm1", type=float, default=2300.0)
+    add_mass_overrides(parser)
+
+
+def add_mass_overrides(parser):
+    parser.add_argument(
+        "--mass",
+        nargs="+",
+        metavar=("SYMBOL", "AMU"),
+        help="Override isotope masses as Symbol Mass pairs, e.g. --mass H 2.014.",
+    )
 
 
 def parse_args():
