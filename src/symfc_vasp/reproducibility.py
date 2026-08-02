@@ -33,16 +33,30 @@ def write_phonopy_yaml(
     return path
 
 
-def _qpath_text(segments) -> str:
+def _connected_path_groups(segments, labels):
+    """Combine adjacent seekpath segments and retain real path breaks."""
+    groups = []
+    for segment, (start_label, end_label) in zip(segments, labels):
+        start = np.asarray(segment[0], dtype=float)
+        end = np.asarray(segment[-1], dtype=float)
+        if groups and np.allclose(groups[-1]["points"][-1], start, atol=1e-10, rtol=0):
+            groups[-1]["points"].append(end)
+            groups[-1]["labels"].append(end_label)
+        else:
+            groups.append({"points": [start, end], "labels": [start_label, end_label]})
+    return groups
+
+
+def _qpath_text(segments, labels) -> str:
+    groups = _connected_path_groups(segments, labels)
     return ", ".join(
-        " ".join(f"{value:.10g}" for value in np.concatenate((segment[0], segment[-1])))
-        for segment in segments
+        " ".join(f"{value:.10g}" for point in group["points"] for value in point)
+        for group in groups
     )
 
 
-def _label_text(labels) -> str:
-    values = [labels[0][0]]
-    values.extend(end for _, end in labels)
+def _label_text(segments, labels) -> str:
+    values = [label for group in _connected_path_groups(segments, labels) for label in group["labels"]]
     return " ".join(value.replace("Γ", "GAMMA") for value in values)
 
 
@@ -123,8 +137,8 @@ def write_phonon_inputs(
     mesh,
     masses,
 ) -> None:
-    path_text = _qpath_text(segments)
-    label_text = _label_text(labels)
+    path_text = _qpath_text(segments, labels)
+    label_text = _label_text(segments, labels)
     dim_text = " ".join(str(int(value)) for value in dim)
     mesh_text = " ".join(str(int(value)) for value in mesh)
     mass_text = " ".join(f"{float(value):.10g}" for value in masses)

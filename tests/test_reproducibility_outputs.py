@@ -72,3 +72,21 @@ def test_phonopy_yaml_contains_supercell_masses_and_force_constants(tmp_path: Pa
     assert yaml_data.supercell_matrix.tolist() == [[2, 0, 0], [0, 2, 0], [0, 0, 2]]
     assert np.asarray(yaml_data.force_constants).shape == (8, 8, 3, 3)
     assert yaml_data.unitcell.masses.tolist() == [2.014]
+
+
+def test_band_conf_joins_only_contiguous_path_segments(tmp_path: Path):
+    segments = [
+        np.asarray([[0, 0, 0], [0.5, 0, 0]]),
+        np.asarray([[0.5, 0, 0], [1 / 3, 1 / 3, 0]]),
+        np.asarray([[0, 0, 0.5], [0.5, 0, 0.5]]),
+    ]
+    labels = [("Γ", "M"), ("M", "K"), ("A", "L")]
+    write_phonon_inputs(
+        tmp_path, segments, labels, [2, 2, 2], 21, [11, 11, 11], [1.008]
+    )
+    config = (tmp_path / "band.conf").read_text()
+
+    band_line = next(line for line in config.splitlines() if line.startswith("BAND ="))
+    assert band_line.count(",") == 1
+    assert "0 0 0 0.5 0 0 0.3333333333 0.3333333333 0" in band_line
+    assert "BAND_LABELS = GAMMA M K A L" in config
