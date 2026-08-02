@@ -10,7 +10,7 @@ import yaml
 
 from . import __version__
 from . import engine
-from .parsers.outcar import scan_outcar
+from .parsers.outcar import scan_outcar, scan_outcar_summary
 from .parsers.vasprun import count_vasprun_frames
 from .selection import select_indices
 
@@ -167,11 +167,28 @@ def _frame_count(path: Path) -> tuple[int, int | None]:
 
 
 def inspect(args) -> dict:
-    total, natom = _frame_count(args.trajectory)
-    indices = select_indices(
-        total, skip=args.skip, samples=args.samples, stride=args.stride,
-        method=args.selection, seed=args.seed,
-    )
+    outcar_scan = None
+    if args.trajectory.name.lower() == "outcar" or args.trajectory.name.lower().endswith(".outcar"):
+        outcar_scan = scan_outcar_summary(args.trajectory)
+        total, natom = outcar_scan.frames, outcar_scan.natom
+    else:
+        total, natom = _frame_count(args.trajectory)
+    try:
+        indices = select_indices(
+            total, skip=args.skip, samples=args.samples, stride=args.stride,
+            method=args.selection, seed=args.seed,
+        )
+    except ValueError as exc:
+        details = [
+            f"trajectory contains {total} force/position frames",
+            f"requested skip={args.skip}, samples={args.samples}",
+        ]
+        if outcar_scan is not None and outcar_scan.spilling_factor_step is not None:
+            details.append(
+                "VASP stopped because the MLFF spilling-factor limit was exceeded "
+                f"at ionic step {outcar_scan.spilling_factor_step}"
+            )
+        raise ValueError(f"{exc}. " + "; ".join(details)) from exc
     result = {
         "trajectory": str(args.trajectory.resolve()),
         "total_frames": total,
