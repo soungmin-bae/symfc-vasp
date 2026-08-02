@@ -27,7 +27,7 @@ from scipy.optimize import linear_sum_assignment
 
 CM1_PER_THZ = 33.35640951981521
 from .parsers import parse_trajectory
-from .parsers.outcar import scan_outcar
+from .parsers.outcar import scan_outcar_summary
 from .parsers.vasprun import count_vasprun_frames
 from .selection import select_indices
 from .reproducibility import (
@@ -204,17 +204,38 @@ def prepare_dataset(args, output: Path) -> tuple[object, object, np.ndarray, np.
     else:
         trajectory = args.trajectory
         if trajectory.name.lower() == "outcar" or trajectory.name.lower().endswith(".outcar"):
-            natom, nframes, nframes_ml = scan_outcar(trajectory)
+            outcar_scan = scan_outcar_summary(trajectory)
+            natom, nframes, nframes_ml = (
+                outcar_scan.natom, outcar_scan.frames, outcar_scan.ml_frames,
+            )
         else:
             nframes = count_vasprun_frames(trajectory)
             natom = len(given)
             nframes_ml = 0
         if natom != len(given):
             raise ValueError(f"trajectory atoms={natom}, POSCAR-supercell atoms={len(given)}")
-        source_indices = select_indices(
-            nframes, skip=args.skip, samples=args.samples, stride=args.stride,
-            method=args.selection, seed=args.seed,
-        )
+        try:
+            source_indices = select_indices(
+                nframes, skip=args.skip, samples=args.samples, stride=args.stride,
+                method=args.selection, seed=args.seed,
+            )
+        except ValueError as exc:
+            context = [
+                f"trajectory contains {nframes} force/position frames",
+                f"requested skip={args.skip}, samples={args.samples}",
+            ]
+            if trajectory.name.lower() == "outcar" or trajectory.name.lower().endswith(".outcar"):
+                if outcar_scan.requested_nsw is not None:
+                    context.append(f"VASP NSW={outcar_scan.requested_nsw}")
+                if outcar_scan.spilling_factor_step is not None:
+                    context.append(
+                        "VASP stopped because the MLFF spilling-factor limit was exceeded "
+                        f"at ionic step {outcar_scan.spilling_factor_step}; this trajectory is not "
+                        "a reliable production dataset"
+                    )
+                elif outcar_scan.soft_stop:
+                    context.append("VASP encountered a soft stop before completing the trajectory")
+            raise ValueError(f"{exc}. " + "; ".join(context)) from exc
         dataset = parse_trajectory(trajectory, source_indices)
         dataset.validate(natom)
         positions, forces = dataset.positions, dataset.forces
