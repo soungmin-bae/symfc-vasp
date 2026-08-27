@@ -87,7 +87,12 @@ def count_vasprun_frames(path: Path) -> int:
     return count
 
 
-def parse_vasprun(path: Path, indices: np.ndarray) -> TrajectoryDataset:
+def parse_vasprun(
+    path: Path,
+    indices: np.ndarray,
+    *,
+    cell_tolerance: float = 1e-6,
+) -> TrajectoryDataset:
     wanted = {int(index): slot for slot, index in enumerate(indices)}
     positions = forces = cells = None
     iframe = 0
@@ -105,9 +110,26 @@ def parse_vasprun(path: Path, indices: np.ndarray) -> TrajectoryDataset:
             element.clear()
     else:
         frames = _interactive_frames(path)
+    reference_cell = None
     for scaled, force, cell in frames:
         if cell is None:
             raise ValueError(f"calculation {iframe} has no crystal basis")
+        if reference_cell is None:
+            reference_cell = np.asarray(cell, dtype=float)
+        else:
+            deviation = float(np.max(np.abs(cell - reference_cell)))
+            if deviation > cell_tolerance:
+                deformation = cell @ np.linalg.inv(reference_cell) - np.eye(3)
+                volume_change = float(
+                    np.linalg.det(cell) / np.linalg.det(reference_cell) - 1.0
+                )
+                raise ValueError(
+                    f"variable-cell trajectory detected in {path.name}: frame {iframe} "
+                    f"differs from frame 0 by {deviation:.6g} A "
+                    f"(max deformation={np.max(np.abs(deformation)):.6g}, "
+                    f"relative volume change={volume_change:.6g}). "
+                    "symfc-vasp accepts fixed-cell NVT or fixed-cell IBRION=11 data only"
+                )
         slot = wanted.get(iframe)
         if slot is not None:
             if positions is None:

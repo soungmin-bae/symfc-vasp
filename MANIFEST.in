@@ -1,6 +1,4 @@
 include LICENSE
 include README.md
-include VALIDATION_PLAN.md
-include REGRESSION_RESULTS.md
-recursive-include examples README.md *.yaml *.sh
-recursive-include scripts *.sh
+recursive-include examples README.md *.yaml
+recursive-include examples/CoH3CN6 BORN INCAR KPOINTS POSCAR-unitcell FORCE_CONSTANTS.harmonic OUTCAR.xz

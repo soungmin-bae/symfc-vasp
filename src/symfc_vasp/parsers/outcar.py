@@ -31,7 +31,7 @@ class OutcarMetadata:
     lattice_records: int
 
 
-def parse_outcar_metadata(path: Path) -> OutcarMetadata:
+def parse_outcar_metadata(path: Path, cell_tolerance: float = 1e-6) -> OutcarMetadata:
     """Read species order and the fixed simulation cell from an OUTCAR.
 
     VASP writes lattice-vector fields at a fixed width, so adjacent values can
@@ -68,8 +68,18 @@ def parse_outcar_metadata(path: Path) -> OutcarMetadata:
     if not cells:
         raise ValueError("OUTCAR contains no readable direct lattice vectors")
     cell = cells[0]
-    if not all(np.allclose(candidate, cell, atol=1e-8, rtol=0) for candidate in cells[1:]):
-        raise ValueError("OUTCAR contains variable lattice vectors; OUTCAR-only mode requires fixed-cell NVT data")
+    for record, candidate in enumerate(cells[1:], start=2):
+        deviation = float(np.max(np.abs(candidate - cell)))
+        if deviation > cell_tolerance:
+            deformation = candidate @ np.linalg.inv(cell) - np.eye(3)
+            volume_change = float(np.linalg.det(candidate) / np.linalg.det(cell) - 1.0)
+            raise ValueError(
+                "variable-cell trajectory detected in OUTCAR: "
+                f"lattice record {record} differs from the first by {deviation:.6g} A "
+                f"(max deformation={np.max(np.abs(deformation)):.6g}, "
+                f"relative volume change={volume_change:.6g}). "
+                "symfc-vasp accepts fixed-cell NVT or fixed-cell IBRION=11 data only"
+            )
     symbols = tuple(symbol for symbol, count in zip(vrhfin, counts) for _ in range(count))
     return OutcarMetadata(symbols=symbols, cell=cell, lattice_records=len(cells))
 

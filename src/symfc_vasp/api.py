@@ -198,7 +198,7 @@ def read_trajectory(config: TrajectoryConfig) -> TrajectoryDataset:
     if is_outcar:
         scan = scan_outcar_summary(path)
         total = scan.frames
-        symbols = parse_outcar_metadata(path).symbols
+        symbols = parse_outcar_metadata(path, config.cell_tolerance).symbols
     else:
         total = count_vasprun_frames(path)
         symbols = vasprun_symbols(path)
@@ -206,7 +206,7 @@ def read_trajectory(config: TrajectoryConfig) -> TrajectoryDataset:
         total, skip=config.skip, stop=config.stop, samples=config.samples,
         stride=config.stride, method=config.selection, seed=config.seed,
     )
-    dataset = parse_trajectory(path, indices)
+    dataset = parse_trajectory(path, indices, cell_tolerance=config.cell_tolerance)
     dataset = TrajectoryDataset(
         dataset.positions, dataset.forces, dataset.cells, dataset.source_indices,
         dataset.source_path, dataset.source_format, symbols,

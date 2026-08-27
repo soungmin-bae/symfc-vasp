@@ -31,8 +31,8 @@ jobs:
       - run: symfc-vasp --help
       - name: Reject retired CLI commands and machine-specific paths
         run: |
-          ! grep -R -I -nE 'symfc-vasp (run|inspect|band|mesh|validate|sample|forces|collect-forces)' README.md examples scripts
-          ! grep -R -I -nE '/(Users|home|work)/[^ ]+' src examples scripts README.md
+          ! grep -R -I -nE 'symfc-vasp (run|inspect|band|mesh|validate|sample|forces|collect-forces)' README.md examples
+          ! grep -R -I -nE '/(Users|home|work)/[^ ]+' src examples README.md
 
   package:
     runs-on: ubuntu-latest

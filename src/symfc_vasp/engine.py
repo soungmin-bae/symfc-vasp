@@ -590,7 +590,11 @@ def prepare_outcar_only_dataset(args, output: Path) -> tuple[object, object, np.
     is_outcar = trajectory.name.lower() == "outcar" or trajectory.name.lower().endswith(".outcar")
     scan = scan_outcar_summary(trajectory) if is_outcar else None
     total_frames = scan.frames if scan is not None else count_vasprun_frames(trajectory)
-    metadata = parse_outcar_metadata(trajectory) if scan is not None else None
+    metadata = (
+        parse_outcar_metadata(trajectory, args.cell_tolerance)
+        if scan is not None
+        else None
+    )
     symbols = metadata.symbols if metadata is not None else vasprun_symbols(trajectory)
     natom = scan.natom if scan is not None else len(symbols)
     stage(
@@ -609,8 +613,16 @@ def prepare_outcar_only_dataset(args, output: Path) -> tuple[object, object, np.
         f"using {len(source_indices)} frames [{source_indices[0]}..{source_indices[-1]}]",
     )
     stage("reference", "Building the periodic mean structure from the selected trajectory frames")
-    dataset = parse_trajectory(trajectory, source_indices)
+    dataset = parse_trajectory(
+        trajectory, source_indices, cell_tolerance=args.cell_tolerance
+    )
     dataset.validate(natom)
+    checked_cells = metadata.lattice_records if metadata is not None else total_frames
+    stage(
+        "trajectory",
+        f"Fixed-cell validation passed across {checked_cells} lattice records/frames "
+        f"(tolerance={args.cell_tolerance:g} A)",
+    )
     # OUTCAR records the fixed lattice in its header, whereas vasprun.xml
     # carries a lattice with every frame.  The lightweight OUTCAR parser only
     # stores positions/forces, so fall back to its metadata cell here.
@@ -888,8 +900,15 @@ def prepare_dataset(args, output: Path) -> tuple[object, object, np.ndarray, np.
         }
     else:
         trajectory = args.trajectory
-        if trajectory.name.lower() == "outcar" or trajectory.name.lower().endswith(".outcar"):
+        is_outcar = (
+            trajectory.name.lower() == "outcar"
+            or trajectory.name.lower().endswith(".outcar")
+        )
+        if is_outcar:
             outcar_scan = scan_outcar_summary(trajectory)
+            outcar_metadata = parse_outcar_metadata(
+                trajectory, args.cell_tolerance
+            )
             natom, nframes, nframes_ml = (
                 outcar_scan.natom, outcar_scan.frames, outcar_scan.ml_frames,
             )
@@ -931,8 +950,16 @@ def prepare_dataset(args, output: Path) -> tuple[object, object, np.ndarray, np.
             f"method={args.selection}, requested_samples={args.samples}; "
             f"using {len(source_indices)} frames [{source_indices[0]}..{source_indices[-1]}]",
         )
-        dataset = parse_trajectory(trajectory, source_indices)
+        dataset = parse_trajectory(
+            trajectory, source_indices, cell_tolerance=args.cell_tolerance
+        )
         dataset.validate(natom)
+        checked_cells = outcar_metadata.lattice_records if is_outcar else nframes
+        stage(
+            "trajectory",
+            f"Fixed-cell validation passed across {checked_cells} lattice records/frames "
+            f"(tolerance={args.cell_tolerance:g} A)",
+        )
         positions, forces = dataset.positions, dataset.forces
         if dataset.cells is not None:
             deviation = float(np.max(np.abs(dataset.cells - dataset.cells[0])))
