@@ -155,5 +155,19 @@ print(result.fc2.shape)
 
 ## Citation
 
-Please cite symfc, phonopy, phono3py, spglib, and seekpath as appropriate when
-publishing results produced with this workflow.
+When publishing results produced with this workflow, please cite the relevant
+underlying projects:
+
+- [symfc](https://symfc.github.io/symfc/)
+- [phonopy](https://phonopy.github.io/phonopy/)
+- [phono3py](https://phonopy.github.io/phono3py/)
+- [spglib](https://spglib.readthedocs.io/)
+- [SeeK-path](https://seekpath.readthedocs.io/)
+
+## Author
+
+**Author:** Soungmin Bae
+
+**Affiliation:** Yokohama City University
+
+**Contact:** [soungminbae@gmail.com](mailto:soungminbae@gmail.com)
