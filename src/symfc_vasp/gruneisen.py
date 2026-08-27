@@ -1,3 +1,9 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright (c) 2026, Soungmin Bae
+# Portions are adapted from phono3py's Gruneisen implementation.
+# Copyright (c) 2015-2024, Phonopy. All rights reserved.
+# See LICENSES/phono3py-BSD-3-Clause.txt.
+
 """Accelerated phono3py Gruneisen tensor evaluation.
 
 phono3py 4.x evaluates the expectation value of dD/du with five nested Python

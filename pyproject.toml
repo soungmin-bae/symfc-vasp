@@ -9,7 +9,7 @@ description = "Fit symfc force constants and phonopy/phono3py analysis from fixe
 readme = "README.md"
 requires-python = ">=3.11"
 license = "BSD-3-Clause"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "LICENSES/*"]
 keywords = ["VASP", "symfc", "phonopy", "phono3py", "force constants", "molecular dynamics"]
 classifiers = [
     "Development Status :: 3 - Alpha",

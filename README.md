@@ -172,3 +172,12 @@ underlying projects:
 **Affiliation:** Yokohama City University
 
 **Contact:** [soungminbae@gmail.com](mailto:soungminbae@gmail.com)
+
+## License
+
+`symfc-vasp` is distributed under the
+[BSD 3-Clause License](LICENSE). Copyright (c) 2026, Soungmin Bae.
+
+Portions of the accelerated Gruneisen implementation are adapted from
+phono3py and retain the original Phonopy BSD 3-Clause notice in
+[`LICENSES/phono3py-BSD-3-Clause.txt`](LICENSES/phono3py-BSD-3-Clause.txt).
