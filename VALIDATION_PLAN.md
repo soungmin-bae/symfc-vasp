@@ -1,20 +1,35 @@
-# N=3000 validation checklist
+# Stabilization acceptance gates
 
-- [x] Common trajectory dataset contract
-- [x] Streaming OUTCAR parser
-- [x] Streaming vasprun.xml parser
-- [x] Exact stride-selection unit test
-- [x] Minimal vasprun.xml parser test
-- [x] Mirror source to Ohtaka
-- [x] Inspect the production OUTCAR and confirm 20,000 frames
-- [x] Confirm selected indices 5000 through 19995 at stride 5
-- [x] Fit FC2 and FC3 on i8cpu
-- [x] Generate phonon dispersion
-- [x] Generate band-path tensor mode-Gruneisen data
-- [x] Generate symmetry-reduced 11x11x11 q-mesh data
-- [x] Verify finite arrays, drift, plots, and manifests
-- [x] Write `FINAL_VALIDATION.yaml` with `passed: true`
+No release is made until every gate below is complete.
 
-The production `vasprun.xml` contains no usable MD force blocks. Its parser is
-validated by unit test; actual OUTCAR/XML numerical equivalence is recorded as
-not available rather than inferred.
+## Public contract
+
+- [x] Four-command CLI: `fit`, `phonon`, `gruneisen`, `full`
+- [x] Typed Python configs, results, and workflow functions
+- [x] FC2 default; FC3 explicit
+- [x] Fixed-cell OUTCAR and vasprun.xml parser contract
+- [x] General integer 3x3 supercell matrix
+- [x] Element and primitive-atom mass overrides
+
+## Scientific diagnostics
+
+- [x] Symmetry candidate scan with integer-cell and atom-map validation
+- [x] Fit identifiability and in-sample reconstruction labels
+- [x] FC permutation and translational residuals
+- [x] Gamma acoustic and imaginary-mode diagnostics
+- [x] NAC shape and finite-value validation
+- [x] Input hashes, dependency versions, timing, and peak memory
+- [x] Vectorized Gruneisen kernels compared with explicit upstream expressions
+
+## Distribution
+
+- [x] Retired sampling and force-collection code removed
+- [x] Examples use only supported commands
+- [x] Linux/macOS CI and Python 3.11-3.13 matrix defined
+- [x] Clean wheel/sdist build and isolated wheel smoke test
+- [x] KZP R-3c reference and completed FC2/phonon regression
+- [x] CoH3(CN)6 P-31m reference and completed FC2+FC3/Gruneisen regression
+- [x] Ohtaka staging-wheel import and CLI smoke test
+
+The package remains version `0.1.1` while the final three external regression
+gates are open. Passing them permits consideration of a `0.2.0` alpha release.

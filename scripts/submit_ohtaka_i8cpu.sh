@@ -19,16 +19,16 @@ export OPENBLAS_NUM_THREADS=1
 export OMP_PLACES=cores
 export OMP_PROC_BIND=close
 
-srun --ntasks=1 --cpus-per-task="${SLURM_CPUS_PER_TASK:-128}" \
-  symfc-vasp run \
-    --trajectory OUTCAR \
+symfc-vasp full \
+    OUTCAR \
     --unitcell POSCAR-unitcell \
     --supercell POSCAR-supercell \
     --dim 2 2 2 \
     --skip 5000 \
     --samples 3000 \
-    --order 2 3 \
+    --fc3 \
     --rc2 7 --rc3 4 \
     --mesh 11 11 11 \
     --output run_N3000 \
+    --analysis-output run_N3000 \
   > run_N3000.stdout 2> run_N3000.stderr

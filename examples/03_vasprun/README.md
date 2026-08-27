@@ -4,7 +4,6 @@
 contains the cell, positions, and forces.
 
 ```bash
-symfc-vasp inspect --config run.yaml
-symfc-vasp run --config run.yaml --output run_vasprun
+symfc-vasp full --config run.yaml vasprun.xml \
+  --output run_vasprun --analysis-output run_vasprun
 ```
-

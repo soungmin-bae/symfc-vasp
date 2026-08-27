@@ -1,5 +1,6 @@
 include LICENSE
 include README.md
+include VALIDATION_PLAN.md
+include REGRESSION_RESULTS.md
 recursive-include examples README.md *.yaml *.sh
 recursive-include scripts *.sh
-

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=symfc-mesh
+#SBATCH --job-name=symfc-analysis
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
@@ -10,5 +10,5 @@ export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 
-symfc-vasp mesh --config run.yaml --fit-dir run/force_constants --analysis-output run/analysis
-symfc-vasp validate run
+symfc-vasp phonon --config run.yaml run/force_constants --analysis-output run/analysis
+symfc-vasp gruneisen --config run.yaml run/force_constants --analysis-output run/analysis

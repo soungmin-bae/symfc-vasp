@@ -16,3 +16,7 @@ def test_inconsistent_stride_is_rejected():
     with pytest.raises(ValueError, match="not requested"):
         select_indices(20000, skip=5000, samples=3000, stride=4)
 
+
+def test_uniform_selection_honors_exclusive_stop():
+    indices = select_indices(100, skip=10, stop=90, samples=5, method="uniform")
+    assert np.array_equal(indices, np.array([10, 29, 49, 69, 89]))

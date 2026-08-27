@@ -9,6 +9,7 @@ import numpy as np
 from ..models import TrajectoryDataset
 
 FORCE_HEADER = re.compile(r"POSITION\s+TOTAL-FORCE\s+\(eV/Angst\)(?:\s+\(ML\))?")
+_NUMBER = re.compile(r"[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[Ee][-+]?\d+)?")
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,58 @@ class OutcarScan:
     requested_nsw: int | None
     spilling_factor_step: int | None
     soft_stop: bool
+
+
+@dataclass(frozen=True)
+class OutcarMetadata:
+    """Structure information recoverable without a companion POSCAR."""
+
+    symbols: tuple[str, ...]
+    cell: np.ndarray
+    lattice_records: int
+
+
+def parse_outcar_metadata(path: Path) -> OutcarMetadata:
+    """Read species order and the fixed simulation cell from an OUTCAR.
+
+    VASP writes lattice-vector fields at a fixed width, so adjacent values can
+    appear without whitespace (e.g. ``0.000000000-10.0``).  A numeric regular
+    expression is used instead of ``str.split`` for those records.
+    """
+    vrhfin: list[str] = []
+    counts: list[int] | None = None
+    cells: list[np.ndarray] = []
+    lines = Path(path).read_text(errors="replace").splitlines()
+    for index, line in enumerate(lines):
+        match = re.search(r"VRHFIN\s*=\s*([A-Za-z]+)", line)
+        if match:
+            vrhfin.append(match.group(1))
+        match = re.search(r"ions per type\s*=\s*(.*)", line)
+        if match:
+            counts = [int(value) for value in match.group(1).split()]
+        if "direct lattice vectors" in line and index + 3 < len(lines):
+            try:
+                cell = np.asarray(
+                    [[float(value) for value in _NUMBER.findall(lines[index + offset])[:3]] for offset in (1, 2, 3)],
+                    dtype=float,
+                )
+            except ValueError:
+                continue
+            if cell.shape == (3, 3) and abs(float(np.linalg.det(cell))) > 1e-12:
+                cells.append(cell)
+    if counts is None or not vrhfin:
+        raise ValueError("OUTCAR does not contain both VRHFIN and ions-per-type records")
+    if len(vrhfin) != len(counts):
+        raise ValueError(
+            f"OUTCAR species/count mismatch: VRHFIN has {len(vrhfin)} entries, ions-per-type has {len(counts)}"
+        )
+    if not cells:
+        raise ValueError("OUTCAR contains no readable direct lattice vectors")
+    cell = cells[0]
+    if not all(np.allclose(candidate, cell, atol=1e-8, rtol=0) for candidate in cells[1:]):
+        raise ValueError("OUTCAR contains variable lattice vectors; OUTCAR-only mode requires fixed-cell NVT data")
+    symbols = tuple(symbol for symbol, count in zip(vrhfin, counts) for _ in range(count))
+    return OutcarMetadata(symbols=symbols, cell=cell, lattice_records=len(cells))
 
 
 def scan_outcar_summary(path: Path) -> OutcarScan:
