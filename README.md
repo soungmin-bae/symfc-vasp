@@ -129,12 +129,13 @@ mode_gruneisen_q_resolved.pdf
 mode_gruneisen_on_phonon_dispersion.pdf
 ```
 
-## Complete example
+## Examples
 
-[`examples/CoH3CN6`](examples/CoH3CN6) contains a compact 200-structure VASP
-MLFF `OUTCAR` and harmonic inputs for generating the same type of trajectory.
-The example can be run immediately or repeated with a user-provided `ML_FF`
-and licensed `POTCAR`.
+- [`examples/CoH3CN6`](examples/CoH3CN6) contains a 200-structure, 128-atom
+  P-31m trajectory, harmonic inputs, NAC data, and an FC2+FC3 workflow.
+- [`examples/KZP`](examples/KZP) contains a 200-structure, 288-atom R-3c
+  trajectory for testing automatic reference-cell reconstruction directly
+  from an `OUTCAR`.
 
 ## Python API
 

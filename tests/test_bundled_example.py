@@ -21,3 +21,19 @@ def test_bundled_outcar_is_a_fixed_cell_mlff_trajectory(tmp_path: Path):
     assert summary.ml_frames == 200
     assert len(metadata.symbols) == 128
     assert metadata.lattice_records >= summary.frames
+
+
+def test_bundled_kzp_outcar_is_a_fixed_cell_mlff_trajectory(tmp_path: Path):
+    archive = Path(__file__).parents[1] / "examples" / "KZP" / "OUTCAR.xz"
+    outcar = tmp_path / "OUTCAR"
+    with lzma.open(archive, "rb") as source, outcar.open("wb") as target:
+        shutil.copyfileobj(source, target)
+
+    summary = scan_outcar_summary(outcar)
+    metadata = parse_outcar_metadata(outcar)
+
+    assert summary.frames == 200
+    assert summary.natom == 288
+    assert summary.ml_frames == 200
+    assert len(metadata.symbols) == 288
+    assert metadata.lattice_records >= summary.frames
