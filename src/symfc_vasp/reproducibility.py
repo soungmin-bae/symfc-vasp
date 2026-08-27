@@ -2,12 +2,130 @@
 
 from __future__ import annotations
 
+from importlib import resources
 from pathlib import Path
+import subprocess
+import sys
 
 import numpy as np
 
 
 CM1_PER_THZ = 33.35640951981521
+
+
+def _supercell_matrix(value) -> np.ndarray:
+    """Normalize three diagonal dimensions or a general 3x3 matrix."""
+    matrix = np.asarray(value, dtype=int)
+    if matrix.shape == (3,):
+        return np.diag(matrix)
+    if matrix.shape != (3, 3):
+        raise ValueError("supercell dimensions must be three values or a 3x3 matrix")
+    return matrix
+
+
+def _supercell_text(value) -> str:
+    """Use compact DIM syntax for diagonal dimensions and 9 values otherwise."""
+    raw = np.asarray(value, dtype=int)
+    values = raw if raw.shape == (3,) else _supercell_matrix(raw).reshape(-1)
+    return " ".join(str(int(item)) for item in values)
+
+
+def write_gruneisen_mesh_yaml(
+    output: Path,
+    unitcell,
+    mesh,
+    qpoints: np.ndarray,
+    weights: np.ndarray,
+    frequencies: np.ndarray,
+    tensors: np.ndarray,
+) -> Path:
+    """Write a phono3py-compatible tensor mesh YAML beside the native HDF5.
+
+    The output contract deliberately matches ``phono3py --gruneisen``:
+    reduced q points, multiplicities, per-mode frequencies, scalar gamma and
+    the full directional tensor.  Scalar gamma is Tr(gamma)/3.
+    """
+    path = output / "gruneisen_mesh.yaml"
+    reciprocal = np.linalg.inv(np.asarray(unitcell.cell, dtype=float)).T
+    scalar = np.trace(tensors, axis1=2, axis2=3) / 3.0
+    with path.open("w") as handle:
+        handle.write("mesh: [ %5d, %5d, %5d ]\n" % tuple(int(value) for value in mesh))
+        handle.write(f"nqpoint: {len(qpoints)}\n")
+        handle.write("reciprocal_lattice:\n")
+        for row in reciprocal:
+            handle.write("- [ %15.10f, %15.10f, %15.10f ]\n" % tuple(row))
+        handle.write("phonon:\n")
+        for iq, qpoint in enumerate(qpoints):
+            handle.write("- q-position: [ %10.7f, %10.7f, %10.7f ]\n" % tuple(qpoint))
+            handle.write(f"  multiplicity: {int(weights[iq])}\n")
+            handle.write("  band:\n")
+            for mode, (frequency, gamma, tensor) in enumerate(
+                zip(frequencies[iq], scalar[iq], tensors[iq], strict=True), start=1
+            ):
+                handle.write(f"  - # {mode}\n")
+                handle.write(f"    frequency: {float(frequency):15.10f}\n")
+                handle.write(f"    gruneisen: {float(gamma):15.10f}\n")
+                handle.write("    gruneisen_tensor:\n")
+                for row in tensor:
+                    handle.write("    - [ %10.7f, %10.7f, %10.7f ]\n" % tuple(row))
+    return path
+
+
+def write_tensor_plotter_bundle(output: Path, mesh, components: list[str] | None = None) -> list[Path]:
+    """Install self-contained tensor YAML/HDF5 plotters into ``analysis``."""
+    template_names = (
+        "export_gruneisen_mesh_yaml.py",
+        "gruneisen_tensor_io.py",
+        "plot_gruneisen_band_tensor.py",
+        "plot_gruneisen_mesh_3d_tensor.py",
+        "plot_mode_gruneisen_q_resolved.py",
+    )
+    written: list[Path] = []
+    template_root = resources.files("symfc_vasp").joinpath("templates")
+    for name in template_names:
+        destination = output / name
+        destination.write_text(template_root.joinpath(name).read_text())
+        destination.chmod(0o755)
+        written.append(destination)
+
+    mesh_tag = "x".join(str(int(value)) for value in mesh)
+    components = components or ["ab", "c"]
+    legacy = {"ab": "ab-axis", "c": "c-axis"}
+    wrappers = {}
+    for component in components:
+        stem = legacy.get(component, component)
+        wrappers[f"plot_gruneisen_band_{stem}.py"] = (
+            "from plot_gruneisen_band_tensor import main\n"
+            f"main(default_component='{component}', default_output='gruneisen-band-{stem}.pdf')\n"
+        )
+        wrappers[f"plot_gruneisen_mesh_3d_{stem}.py"] = (
+            "from plot_gruneisen_mesh_3d_tensor import main\n"
+            f"main(default_component='{component}', default_output='mode_gruneisen_qmesh_{mesh_tag}_{stem}.html')\n"
+        )
+    for name, contents in wrappers.items():
+        destination = output / name
+        destination.write_text("#!/usr/bin/env python3\n" + contents)
+        destination.chmod(0o755)
+        written.append(destination)
+    return written
+
+
+def render_tensor_plotter_bundle(
+    output: Path, mesh, gmin: float, gmax: float, fmin_cm1: float, fmax_cm1: float, cutoff: float,
+    components: list[str] | None = None,
+) -> None:
+    """Render the analysis-local tensor plotter set with the current Python."""
+    mesh_tag = "x".join(str(int(value)) for value in mesh)
+    components = components or ["ab", "c"]
+    legacy = {"ab": "ab-axis", "c": "c-axis"}
+    commands = [[f"plot_gruneisen_mesh_3d_{legacy.get(component, component)}.py", "--static", "png"] for component in components]
+    if (output / "gruneisen_band.yaml").is_file():
+        commands[:0] = [
+            [f"plot_gruneisen_band_{legacy.get(component, component)}.py", "--gmin", str(gmin), "--gmax", str(gmax), "--fmin", str(fmin_cm1), "--fmax", str(fmax_cm1), "--cutoff", str(cutoff)]
+            for component in components
+        ] + [["plot_mode_gruneisen_q_resolved.py", "--gmin", str(gmin), "--gmax", str(gmax), "--cutoff", str(cutoff)]]
+    for command in commands:
+        subprocess.run([sys.executable, *command], cwd=output, check=True)
 
 
 def write_phonopy_yaml(
@@ -17,17 +135,20 @@ def write_phonopy_yaml(
     force_constants: np.ndarray,
     *,
     symprec: float,
+    nac_params: dict | None = None,
 ) -> Path:
     """Write a self-contained phonopy YAML file containing the fitted FC2."""
     from phonopy import Phonopy
 
     phonon = Phonopy(
         unitcell,
-        supercell_matrix=np.diag(np.asarray(dim, dtype=int)),
-        primitive_matrix="auto",
+        supercell_matrix=_supercell_matrix(dim),
+        primitive_matrix="P",
         symprec=symprec,
     )
     phonon.force_constants = np.asarray(force_constants, dtype=float)
+    if nac_params is not None:
+        phonon.nac_params = nac_params
     path = output / "phonopy_disp.yaml"
     phonon.save(filename=path, settings={"force_constants": True})
     return path
@@ -111,6 +232,29 @@ def write_band_dat(path: Path, rows: np.ndarray) -> None:
                 handle.write("\n\n")
 
 
+def write_plain_phonon_band_dat(path: Path, distances, frequencies) -> None:
+    """Write FC2 band data in gnuplot's line-friendly block ordering.
+
+    Each blank-line-separated block is one branch on one path segment.  This
+    makes the minimal command ``plot 'phonon_band.dat' u 1:2 w l`` draw bands,
+    rather than connecting all modes at each q point into vertical strokes.
+    """
+    with path.open("w") as handle:
+        handle.write("# distance frequency_THz segment mode\n")
+        for segment_index, (segment_distances, segment_frequencies) in enumerate(
+            zip(distances, frequencies, strict=True)
+        ):
+            for mode in range(segment_frequencies.shape[1]):
+                for distance, frequency in zip(
+                    segment_distances, segment_frequencies[:, mode], strict=True
+                ):
+                    handle.write(
+                        f"{float(distance):.12g} {float(frequency):.12g} "
+                        f"{segment_index} {mode + 1}\n"
+                    )
+                handle.write("\n\n")
+
+
 def write_mesh_dat(path: Path, rows: np.ndarray) -> None:
     with path.open("w") as handle:
         handle.write(
@@ -136,10 +280,11 @@ def write_phonon_inputs(
     band_points: int,
     mesh,
     masses,
+    has_nac: bool = False,
 ) -> None:
     path_text = _qpath_text(segments, labels)
     label_text = _label_text(segments, labels)
-    dim_text = " ".join(str(int(value)) for value in dim)
+    dim_text = _supercell_text(dim)
     mesh_text = " ".join(str(int(value)) for value in mesh)
     mass_text = " ".join(f"{float(value):.10g}" for value in masses)
     legacy_phono3py_config = output / "phono3py-gruneisen.conf"
@@ -156,7 +301,7 @@ def write_phonon_inputs(
     )
     (output / "band.conf").write_text(
         "# phonopy input generated by symfc-vasp\n"
-        "FORCE_CONSTANTS = READ\n" + common
+        "FORCE_CONSTANTS = READ\n" + ("NAC = .TRUE.\n" if has_nac else "") + common
     )
     (output / "phono3py-gruneisen-band.conf").write_text(
         "# phono3py band-path input generated by symfc-vasp\n"
@@ -169,14 +314,15 @@ def write_phonon_inputs(
         f"DIM = {dim_text}\n"
         f"MASS = {mass_text}\n"
     )
-    command = '''#!/usr/bin/env bash
+    nac_flag = " --nac" if has_nac else ""
+    command = f'''#!/usr/bin/env bash
 set -euo pipefail
 
 # phonopy_disp.yaml contains the cell, supercell matrix, masses, and FC2.
 phonopy -p band.conf -s
 phonopy-bandplot --gnuplot band.yaml > phonopy-band.dat
-phono3py phono3py-gruneisen-band.conf -c POSCAR-unitcell --fc2 --fc3
-phono3py phono3py-gruneisen-mesh.conf -c POSCAR-unitcell --fc2 --fc3
+phono3py phono3py-gruneisen-band.conf -c POSCAR-unitcell --fc2 --fc3{nac_flag}
+phono3py phono3py-gruneisen-mesh.conf -c POSCAR-unitcell --fc2 --fc3{nac_flag}
 '''
     command_path = output / "run_phonopy_phono3py.sh"
     command_path.write_text(command)
@@ -331,6 +477,7 @@ supercell matrix, effective masses, and fitted FC2. `band.conf` and
 `phono3py-gruneisen-band.conf` and `phono3py-gruneisen-mesh.conf` record the
 external phonopy/phono3py settings.
 To rerun those programs, link or copy `FORCE_CONSTANTS`, `fc2.hdf5`, and
-`fc3.hdf5` into this directory and execute `run_phonopy_phono3py.sh`.
+`fc3.hdf5` into this directory and execute `run_phonopy_phono3py.sh`. If this
+analysis used NAC, the copied `BORN` file is also required.
 '''
     )

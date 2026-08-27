@@ -1,33 +1,23 @@
+"""Small command-line interface for fitting and analysing VASP trajectories."""
+
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
-import numpy as np
 import yaml
 
-from . import __version__
-from . import engine
-from .parsers.outcar import scan_outcar, scan_outcar_summary
-from .parsers.vasprun import count_vasprun_frames
-from .selection import select_indices
+from . import __version__, engine
+from .api import AnalysisConfig, FitConfig, WorkflowConfig, calculate_gruneisen, calculate_phonons, fit_force_constants, run_workflow
+from .cli_options import add_analysis, add_common_fit, add_mass_overrides
 
 
-def add_inputs(parser):
-    engine.add_common_fit(parser)
-
-
-def add_post(parser):
-    engine.add_analysis(parser)
-
-
-def add_config(parser):
+def add_config(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--config",
         type=Path,
-        help="Load settings from a previous run.yaml; explicit CLI options override the file.",
+        help="Read optional run.yaml defaults; explicit command-line options take precedence.",
     )
 
 
@@ -42,45 +32,53 @@ def _append(tokens: list[str], option: str, value) -> None:
 
 
 def _config_tokens(command: str, path: Path) -> list[str]:
-    """Translate run.yaml into CLI defaults that explicit arguments may override."""
+    """Translate the small supported subset of run.yaml into CLI defaults."""
     data = yaml.safe_load(path.read_text()) or {}
     tokens: list[str] = []
-    fit_commands = {"inspect", "extract", "fit", "run"}
-    analysis_commands = {"phonon", "band", "mesh", "gruneisen", "plot", "run"}
-    if command in fit_commands:
+    if command in {"fit", "full"}:
         _append(tokens, "--trajectory", data.get("trajectory"))
         _append(tokens, "--dataset-npz", data.get("dataset_npz"))
         _append(tokens, "--unitcell", data.get("unitcell"))
         _append(tokens, "--supercell", data.get("supercell"))
+        _append(tokens, "--reference-mode", data.get("reference_mode"))
         _append(tokens, "--dim", data.get("dim"))
-        selection = data.get("selection", {})
+        selection = data.get("selection", {}) or {}
         _append(tokens, "--selection", selection.get("method"))
         _append(tokens, "--skip", selection.get("skip"))
+        _append(tokens, "--stop", selection.get("stop"))
         _append(tokens, "--samples", selection.get("samples"))
         _append(tokens, "--stride", selection.get("stride"))
         _append(tokens, "--seed", selection.get("seed"))
         if selection.get("center_selected") is not None:
             tokens.append("--center-selected" if selection["center_selected"] else "--no-center-selected")
-        fc = data.get("force_constants", {})
-        _append(tokens, "--order", fc.get("orders"))
+        fc = data.get("force_constants", {}) or {}
+        if 3 in fc.get("orders", []):
+            tokens.append("--fc3")
         _append(tokens, "--rc2", fc.get("rc2_A"))
-        _append(tokens, "--rc3", fc.get("rc3_A"))
+        if 3 in fc.get("orders", []):
+            _append(tokens, "--rc3", fc.get("rc3_A"))
         _append(tokens, "--symprec", fc.get("symprec"))
         _append(tokens, "--map-tolerance", fc.get("map_tolerance_A"))
         _append(tokens, "--batch-size", fc.get("batch_size"))
         _append(tokens, "--metric-samples", fc.get("metric_samples"))
-        if fc.get("use_mkl") is not None:
-            tokens.append("--use-mkl" if fc["use_mkl"] else "--no-use-mkl")
-    if command in analysis_commands:
-        if command != "run":
+        if fc.get("use_mkl") is False:
+            tokens.append("--no-mkl")
+
+    if command in {"phonon", "gruneisen", "full"}:
+        if command != "full":
             _append(tokens, "--dim", data.get("dim"))
-        mass_overrides = data.get("mass_overrides", {}) or {}
-        if mass_overrides:
-            mass_values = []
-            for symbol, mass in mass_overrides.items():
-                mass_values.extend((symbol, mass))
-            _append(tokens, "--mass", mass_values)
-        analysis = data.get("analysis", {})
+            _append(tokens, "--symprec", (data.get("force_constants", {}) or {}).get("symprec"))
+        mass_values: list[object] = []
+        for symbol, mass in (data.get("mass_overrides", {}) or {}).items():
+            mass_values.extend((symbol, mass))
+        _append(tokens, "--mass", mass_values or None)
+        atom_mass_values: list[object] = []
+        for index, mass in (data.get("atom_mass_overrides", {}) or {}).items():
+            atom_mass_values.extend((index, mass))
+        _append(tokens, "--mass-index", atom_mass_values or None)
+        analysis = data.get("analysis", {}) or {}
+        nac = data.get("nac", {}) or {}
+        _append(tokens, "--born", nac.get("born"))
         _append(tokens, "--band-points", analysis.get("band_points"))
         _append(tokens, "--mesh", analysis.get("mesh"))
         _append(tokens, "--frequency-cutoff", analysis.get("frequency_cutoff_THz"))
@@ -92,8 +90,6 @@ def _config_tokens(command: str, path: Path) -> list[str]:
         if frequency_limits:
             _append(tokens, "--fmin-cm1", frequency_limits[0])
             _append(tokens, "--fmax-cm1", frequency_limits[1])
-        if command != "run":
-            _append(tokens, "--symprec", data.get("force_constants", {}).get("symprec"))
     return tokens
 
 
@@ -109,235 +105,175 @@ def expand_config_argv(argv: list[str]) -> list[str]:
         if token.startswith("--config="):
             config_path = Path(token.split("=", 1)[1])
             break
-    if config_path is None:
-        return argv
-    return [command, *_config_tokens(command, config_path), *argv[1:]]
+    return argv if config_path is None else [command, *_config_tokens(command, config_path), *argv[1:]]
+
+
+def validate_fit_contract(args) -> None:
+    errors: list[str] = []
+    trajectory = getattr(args, "trajectory", None)
+    dataset = getattr(args, "dataset_npz", None)
+    unitcell = getattr(args, "unitcell", None)
+    supercell = getattr(args, "supercell", None)
+    mode = getattr(args, "reference_mode", "auto")
+    if trajectory is None and dataset is None:
+        errors.append("provide OUTCAR/vasprun.xml or --trajectory FILE (or --dataset-npz FILE)")
+    if trajectory is not None and dataset is not None:
+        errors.append("use either a trajectory or --dataset-npz, not both")
+    if trajectory is not None and not trajectory.is_file():
+        errors.append(f"trajectory file does not exist: {trajectory}")
+    if dataset is not None and not dataset.is_file():
+        errors.append(f"dataset file does not exist: {dataset}")
+    if mode == "provided" and (unitcell is None or supercell is None):
+        errors.append("--reference-mode provided requires both --unitcell and --supercell")
+    if supercell is not None and unitcell is None:
+        errors.append("--supercell requires --unitcell")
+    for label, path in (("unitcell", unitcell), ("supercell", supercell)):
+        if path is not None and not path.is_file():
+            errors.append(f"{label} file does not exist: {path}")
+    if errors:
+        message = ["Invalid fitting input:", *(f"  - {error}" for error in errors), "", "Examples:",
+                   "  symfc-vasp fit OUTCAR", "  symfc-vasp fit vasprun.xml --fc3",
+                   "  symfc-vasp full OUTCAR --fc3"]
+        raise ValueError("\n".join(message))
+
+
+def _add_full_analysis(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--analysis-output", type=Path, default=Path("."), help="Analysis directory (default: current directory).")
+    parser.add_argument("--band-points", type=int, default=21)
+    parser.add_argument("--mesh", nargs=3, type=int, default=(11, 11, 11), metavar=("NQ1", "NQ2", "NQ3"))
+    parser.add_argument("--gmin", type=float, default=-60.0)
+    parser.add_argument("--gmax", type=float, default=20.0)
+    parser.add_argument("--frequency-cutoff", type=float, default=0.05)
+    parser.add_argument("--fmin-cm1", type=float, default=-100.0)
+    parser.add_argument("--fmax-cm1", type=float, default=2300.0)
+    parser.add_argument("--born", type=Path, help="phonopy-format BORN file for NAC; copied to analysis.")
+    add_mass_overrides(parser)
 
 
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
         prog="symfc-vasp",
-        description="Fit symfc FC2/FC3 and calculate phonopy/phono3py finite-temperature phonons.",
+        description="Fit symfc force constants from VASP trajectories and postprocess with phonopy/phono3py.",
     )
     root.add_argument("--version", action="version", version=__version__)
     commands = root.add_subparsers(dest="command", required=True)
-    for name, help_text in (
-        ("inspect", "Inspect trajectory and resolve frame selection"),
-        ("extract", "Extract selected trajectory and atom mapping"),
-        ("fit", "Fit FC2 or FC2+FC3 with symfc"),
-    ):
-        item = commands.add_parser(name, help=help_text)
-        add_config(item)
-        add_inputs(item)
-    for name, help_text in (
-        ("phonon", "Calculate phonon and band-path analysis from fitted FCs (alias of band)"),
-        ("band", "Calculate phonon dispersion and band-path mode-Gruneisen plots"),
-        ("mesh", "Calculate q-mesh mode-Gruneisen data and plots"),
-        ("gruneisen", "Calculate tensor mode-Gruneisen band and mesh data"),
-        ("plot", "Regenerate plots from existing q-path data"),
-    ):
-        item = commands.add_parser(name, help=help_text)
-        add_config(item)
-        add_post(item)
-    run = commands.add_parser("run", help="Run extraction, fitting, phonon and Gruneisen stages")
-    add_config(run)
-    add_inputs(run)
-    run.add_argument("--analysis-output", type=Path, default=Path("analysis"))
-    run.add_argument("--band-points", type=int, default=21)
-    run.add_argument("--mesh", nargs=3, type=int, default=(11, 11, 11))
-    run.add_argument("--gmin", type=float, default=-60.0)
-    run.add_argument("--gmax", type=float, default=20.0)
-    run.add_argument("--frequency-cutoff", type=float, default=0.05)
-    run.add_argument("--fmin-cm1", type=float, default=-100.0)
-    run.add_argument("--fmax-cm1", type=float, default=2300.0)
-    engine.add_mass_overrides(run)
-    status = commands.add_parser("status", help="Report outputs present in a run directory")
-    status.add_argument("run_dir", type=Path, nargs="?", default=Path("."))
-    validate = commands.add_parser("validate", help="Validate a completed run")
-    validate.add_argument("run_dir", type=Path, nargs="?", default=Path("."))
-    validate.add_argument("--reference", type=Path)
+
+    fit = commands.add_parser(
+        "fit", formatter_class=argparse.RawDescriptionHelpFormatter,
+        help="Fit FC2 (or FC2+FC3 with --fc3) in the current directory.",
+        epilog=("Examples:\n  symfc-vasp fit OUTCAR\n  symfc-vasp fit vasprun.xml --fc3\n"
+                "  symfc-vasp fit OUTCAR --unitcell POSCAR-unitcell --samples 3000 --selection uniform\n\n"
+                "Writes FC files and provenance beside the trajectory. The concise progress log is shown\n"
+                "in the terminal; use --verbose to also stream the complete symfc solver log."),
+    )
+    add_config(fit)
+    add_common_fit(fit)
+
+    phonon = commands.add_parser(
+        "phonon", formatter_class=argparse.RawDescriptionHelpFormatter,
+        help="Create FC2 phonon dispersion in the current directory.",
+        epilog=("Examples:\n  symfc-vasp phonon .\n  symfc-vasp phonon fit-dir --analysis-output analysis\n\n"
+                "Use '.' explicitly for the current directory. It overwrites package-generated\n"
+                "phonopy outputs and writes band.conf, phonopy_disp.yaml, band.yaml, and band.pdf."),
+    )
+    add_config(phonon)
+    add_analysis(phonon)
+
+    gruneisen = commands.add_parser(
+        "gruneisen", formatter_class=argparse.RawDescriptionHelpFormatter,
+        help="Create FC2+FC3 band-path and q-mesh mode-Gruneisen outputs in the current directory.",
+        epilog=("Examples:\n  symfc-vasp gruneisen .\n  symfc-vasp gruneisen fit-dir --mesh 21 21 21\n\n"
+                "Requires fc3.hdf5 from `symfc-vasp fit ... --fc3`. It refreshes the package-generated\n"
+                "band, mesh, YAML, table, and plot files in the current directory."),
+    )
+    add_config(gruneisen)
+    add_analysis(gruneisen)
+
+    full = commands.add_parser(
+        "full", formatter_class=argparse.RawDescriptionHelpFormatter,
+        help="Fit and create phonon output; add --fc3 to also create Gruneisen output.",
+        epilog=("Examples:\n  symfc-vasp full OUTCAR\n  symfc-vasp full OUTCAR --fc3 --mesh 11 11 11\n"
+                "  symfc-vasp full vasprun.xml --unitcell POSCAR-unitcell --born BORN --mass H 2.014\n\n"
+                "Without --fc3 this ends after FC2 fitting and phonon dispersion. With --fc3 it also\n"
+                "writes band-path and q-mesh mode-Gruneisen data and plots."),
+    )
+    add_config(full)
+    add_common_fit(full)
+    _add_full_analysis(full)
     return root
 
 
-def _frame_count(path: Path) -> tuple[int, int | None]:
-    if path.name.lower() == "outcar" or path.name.lower().endswith(".outcar"):
-        natom, frames, _ = scan_outcar(path)
-        return frames, natom
-    return count_vasprun_frames(path), None
+def _apply_positionals(args) -> None:
+    trajectory = getattr(args, "trajectory_input", None)
+    if trajectory is not None:
+        args.trajectory = trajectory
+    fit_dir = getattr(args, "fit_dir_input", None)
+    if fit_dir is not None:
+        args.fit_dir = fit_dir
 
 
-def inspect(args) -> dict:
-    outcar_scan = None
-    if args.trajectory.name.lower() == "outcar" or args.trajectory.name.lower().endswith(".outcar"):
-        outcar_scan = scan_outcar_summary(args.trajectory)
-        total, natom = outcar_scan.frames, outcar_scan.natom
-    else:
-        total, natom = _frame_count(args.trajectory)
-    try:
-        indices = select_indices(
-            total, skip=args.skip, samples=args.samples, stride=args.stride,
-            method=args.selection, seed=args.seed,
-        )
-    except ValueError as exc:
-        details = [
-            f"trajectory contains {total} force/position frames",
-            f"requested skip={args.skip}, samples={args.samples}",
-        ]
-        if outcar_scan is not None and outcar_scan.spilling_factor_step is not None:
-            details.append(
-                "VASP stopped because the MLFF spilling-factor limit was exceeded "
-                f"at ionic step {outcar_scan.spilling_factor_step}"
-            )
-        raise ValueError(f"{exc}. " + "; ".join(details)) from exc
-    result = {
-        "trajectory": str(args.trajectory.resolve()),
-        "total_frames": total,
-        "natom": natom,
-        "selection": {
-            "method": args.selection,
-            "skip": args.skip,
-            "samples": len(indices),
-            "first": int(indices[0]),
-            "last": int(indices[-1]),
-            "intervals": sorted(set(np.diff(indices).tolist())) if len(indices) > 1 else [],
-        },
+def _normalise_orders(args) -> None:
+    args.order = (2, 3) if getattr(args, "fc3", False) else (2,)
+
+
+def _write_full_config(args, fit_dir: Path) -> None:
+    payload = {
+        "trajectory": str(args.trajectory.resolve()) if args.trajectory else None,
+        "dataset_npz": str(args.dataset_npz.resolve()) if args.dataset_npz else None,
+        "unitcell": str(args.unitcell.resolve()) if args.unitcell else None,
+        "supercell": str(args.supercell.resolve()) if args.supercell else None,
+        "dim": list(args.dim) if args.dim else None,
+        "selection": {"method": args.selection, "skip": args.skip, "stop": args.stop, "samples": args.samples,
+                      "stride": args.stride, "seed": args.seed, "center_selected": args.center_selected},
+        "force_constants": {"orders": list(args.order), "rc2_A": args.rc2, "rc3_A": args.rc3 if args.fc3 else None,
+                            "symprec": args.symprec, "map_tolerance_A": args.map_tolerance,
+                            "batch_size": args.batch_size, "metric_samples": args.metric_samples,
+                            "use_mkl": args.use_mkl},
+        "mass_overrides": engine.parse_mass_overrides(args.mass),
+        "atom_mass_overrides": engine.parse_atom_mass_overrides(
+            getattr(args, "mass_index", None)
+        ),
+        "analysis": {"band_points": args.band_points, "mesh": list(args.mesh), "frequency_cutoff_THz": args.frequency_cutoff,
+                     "gruneisen_plot_range": [args.gmin, args.gmax], "frequency_plot_range_cm1": [args.fmin_cm1, args.fmax_cm1]},
+        "nac": {"born": str(args.born.resolve()) if args.born else None},
     }
-    print(yaml.safe_dump(result, sort_keys=False), end="")
-    return result
+    with (fit_dir / "run.yaml").open("w") as handle:
+        yaml.safe_dump(payload, handle, sort_keys=False)
 
 
-def validate(run_dir: Path, reference: Path | None = None) -> dict:
-    fit_dir = run_dir / "force_constants"
-    analysis = run_dir / "analysis"
-    run_config = {}
-    if (run_dir / "run.yaml").is_file():
-        run_config = yaml.safe_load((run_dir / "run.yaml").read_text()) or {}
-    orders = run_config.get("force_constants", {}).get("orders", [2, 3])
-    mesh = run_config.get("analysis", {}).get("mesh", [11, 11, 11])
-    mesh_tag = "x".join(str(value) for value in mesh)
-    required = [
-        fit_dir / "FORCE_CONSTANTS", fit_dir / "fc2.hdf5",
-        fit_dir / "selected_indices.txt", fit_dir / "symfc_summary.yaml",
-        analysis / "phonon_dispersion.tsv", analysis / "mode_gruneisen_qpath.tsv",
-        analysis / f"gruneisen_qmesh_{mesh_tag}.hdf5",
-        analysis / "mode_gruneisen_q_resolved.pdf", analysis / "mode_gruneisen_q_resolved.png",
-        analysis / "mode_gruneisen_on_phonon_dispersion.pdf", analysis / "mode_gruneisen_on_phonon_dispersion.png",
-        analysis / f"mode_gruneisen_qmesh_{mesh_tag}.pdf", analysis / f"mode_gruneisen_qmesh_{mesh_tag}.png",
-        analysis / "band.conf", analysis / "phono3py-gruneisen-band.conf",
-        analysis / "phono3py-gruneisen-mesh.conf", analysis / "phonon_band.dat",
-        analysis / f"gruneisen_qmesh_{mesh_tag}.dat", analysis / "README_REPRODUCE.md",
-        analysis / "plot_phonon_dispersion.gp",
-        analysis / "plot_mode_gruneisen_q_resolved.gp",
-        analysis / "plot_mode_gruneisen_on_phonon_dispersion.gp",
-        analysis / "plot_mode_gruneisen_qmesh.gp",
-    ]
-    if 3 in orders:
-        required.append(fit_dir / "fc3.hdf5")
-    missing = [str(path) for path in required if not path.is_file() or path.stat().st_size == 0]
-    indices = np.loadtxt(fit_dir / "selected_indices.txt", dtype=int) if not missing else np.array([])
-    arrays_finite = True
-    if not missing:
-        arrays_finite = bool(np.isfinite(np.loadtxt(analysis / "mode_gruneisen_qpath.tsv")).all())
-    comparison = None
-    if reference is not None and (reference / "analysis/mode_gruneisen_qpath.tsv").is_file() and not missing:
-        current = np.loadtxt(analysis / "mode_gruneisen_qpath.tsv")
-        expected = np.loadtxt(reference / "analysis/mode_gruneisen_qpath.tsv")
-        comparison = {
-            "shape_equal": current.shape == expected.shape,
-            "max_abs_difference": float(np.max(np.abs(current - expected))) if current.shape == expected.shape else None,
-        }
-    selection = run_config.get("selection", {})
-    requested_samples = selection.get("samples")
-    requested_skip = selection.get("skip", 0)
-    expected_contract = bool(
-        len(indices) > 0
-        and (requested_samples is None or len(indices) == requested_samples)
-        and indices[0] >= requested_skip
-        and len(np.unique(indices)) == len(indices)
-        and np.all(np.diff(indices) > 0)
-    )
-    passed = not missing and arrays_finite and expected_contract
-    result = {
-        "passed": passed,
-        "missing": missing,
-        "arrays_finite": arrays_finite,
-        "selected_frames": int(len(indices)),
-        "first_index": int(indices[0]) if len(indices) else None,
-        "last_index": int(indices[-1]) if len(indices) else None,
-        "validation_selection_contract": expected_contract,
-        "reference_comparison": comparison,
-    }
-    with (run_dir / "FINAL_VALIDATION.yaml").open("w") as handle:
-        yaml.safe_dump(result, handle, sort_keys=False)
-    print(yaml.safe_dump(result, sort_keys=False), end="")
-    return result
-
-
-def main(argv=None):
+def main(argv=None) -> None:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if not raw_argv:
+        parser().parse_args(["--help"])
+    # A bare command never starts an expensive calculation. Use an explicit
+    # positional '.' for the flat current-directory postprocessing workflow.
+    if raw_argv in (["fit"], ["phonon"], ["gruneisen"], ["full"]):
+        parser().parse_args([raw_argv[0], "--help"])
     args = parser().parse_args(expand_config_argv(raw_argv))
-    if args.command == "inspect":
-        inspect(args)
-    elif args.command == "extract":
-        args.output.mkdir(parents=True, exist_ok=True)
-        engine.prepare_dataset(args, args.output.resolve())
-    elif args.command == "fit":
-        engine.fit(args)
-    elif args.command in ("phonon", "band"):
-        engine.postprocess(args, do_band=True, do_mesh=False)
-    elif args.command == "mesh":
-        engine.postprocess(args, do_band=False, do_mesh=True)
+    _apply_positionals(args)
+
+    if args.command in {"fit", "full"}:
+        try:
+            validate_fit_contract(args)
+        except ValueError as exc:
+            parser().error(str(exc))
+        _normalise_orders(args)
+
+    if args.command == "fit":
+        fit_force_constants(FitConfig.from_namespace(args))
+    elif args.command == "phonon":
+        calculate_phonons(AnalysisConfig.from_namespace(args))
     elif args.command == "gruneisen":
-        engine.postprocess(args, do_band=True, do_mesh=True)
-    elif args.command == "plot":
-        engine.render_existing(args)
-    elif args.command == "run":
-        run_dir = args.output.resolve()
-        run_dir.mkdir(parents=True, exist_ok=True)
-        with (run_dir / "run.yaml").open("w") as handle:
-            yaml.safe_dump(
-                {
-                    "trajectory": str(args.trajectory.resolve()),
-                    "dataset_npz": str(args.dataset_npz.resolve()) if args.dataset_npz else None,
-                    "unitcell": str(args.unitcell.resolve()),
-                    "supercell": str(args.supercell.resolve()),
-                    "dim": list(args.dim),
-                    "mass_overrides": engine.parse_mass_overrides(args.mass),
-                    "selection": {
-                        "method": args.selection, "skip": args.skip,
-                        "samples": args.samples, "stride": args.stride, "seed": args.seed,
-                        "center_selected": args.center_selected,
-                    },
-                    "force_constants": {
-                        "orders": list(args.order), "rc2_A": args.rc2, "rc3_A": args.rc3,
-                        "symprec": args.symprec, "map_tolerance_A": args.map_tolerance,
-                        "batch_size": args.batch_size, "metric_samples": args.metric_samples,
-                        "use_mkl": args.use_mkl,
-                    },
-                    "analysis": {
-                        "band_points": args.band_points, "mesh": list(args.mesh),
-                        "frequency_cutoff_THz": args.frequency_cutoff,
-                        "gruneisen_plot_range": [args.gmin, args.gmax],
-                        "frequency_plot_range_cm1": [args.fmin_cm1, args.fmax_cm1],
-                    },
-                },
-                handle,
-                sort_keys=False,
-            )
-        fit_dir = run_dir / "force_constants"
-        args.output = fit_dir
-        args.analysis_output = run_dir / "analysis"
-        engine.fit(args)
-        engine.postprocess(args, fit_dir=fit_dir, do_band=True, do_mesh=True)
-        engine.stage("validate", "Checking finite arrays, frame selection, and required outputs")
-        validate(run_dir)
-    elif args.command == "status":
-        files = sorted(str(path.relative_to(args.run_dir)) for path in args.run_dir.rglob("*") if path.is_file())
-        print(json.dumps({"run_dir": str(args.run_dir.resolve()), "files": files}, indent=2))
-    elif args.command == "validate":
-        result = validate(args.run_dir.resolve(), args.reference.resolve() if args.reference else None)
-        if not result["passed"]:
-            raise SystemExit(1)
+        calculate_gruneisen(AnalysisConfig.from_namespace(args))
+    elif args.command == "full":
+        fit_dir = args.output.resolve()
+        fit_dir.mkdir(parents=True, exist_ok=True)
+        _write_full_config(args, fit_dir)
+        fit_config = FitConfig.from_namespace(args)
+        analysis_config = AnalysisConfig.from_namespace(args, fit_dir=fit_dir)
+        run_workflow(WorkflowConfig(fit=fit_config, analysis=analysis_config))
+        if not args.fc3:
+            engine.stage("full", "FC2 phonon workflow complete; use --fc3 to add mode-Gruneisen analysis")
 
 
 if __name__ == "__main__":

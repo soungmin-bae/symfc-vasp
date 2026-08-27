@@ -1,21 +1,10 @@
 # symfc-vasp
 
-`symfc-vasp` extracts finite-temperature force constants from fixed-cell VASP
-molecular-dynamics trajectories. It connects four operations in one
-reproducible workflow:
-
-1. read positions and Born-Oppenheimer forces from `OUTCAR` or `vasprun.xml`;
-2. select equilibrated trajectory frames;
-3. fit symmetry-adapted FC2 and FC3 with symfc;
-4. calculate phonons and tensor mode-Gruneisen parameters with phonopy and
-   phono3py.
-
-This is an independent workflow package and is not an official symfc or VASP
-project.
+`symfc-vasp` fits symmetry-adapted force constants from fixed-cell VASP
+trajectories and calculates phonon dispersions and mode-Gruneisen parameters.
+It accepts `OUTCAR` and `vasprun.xml`. NPT trajectories are not supported.
 
 ## Installation
-
-Install from a source checkout:
 
 ```bash
 git clone https://github.com/soungmin-bae/symfc-vasp.git
@@ -23,203 +12,148 @@ cd symfc-vasp
 python -m pip install .
 ```
 
-For development:
+Python 3.11-3.13, phonopy 4.x, phono3py 4.x, and symfc 1.7.x are supported.
+
+## Basic usage
+
+Fit FC2 and calculate the phonon dispersion:
 
 ```bash
-python -m pip install -e '.[dev]'
-pytest
+symfc-vasp full OUTCAR
 ```
 
-Confirm the installation:
+Add FC3 and mode-Gruneisen calculations:
 
 ```bash
-symfc-vasp --version
-symfc-vasp --help
+symfc-vasp full OUTCAR --fc3
 ```
 
-## Required input
-
-A calculation directory normally contains:
-
-```text
-case/
-├── OUTCAR              # or vasprun.xml
-├── POSCAR-supercell    # atom order used by VASP MD
-├── POSCAR-unitcell     # unit-cell symmetry reference
-└── run.yaml            # optional reusable workflow configuration
-```
-
-The trajectory must use a fixed simulation cell. `POSCAR-supercell` must have
-the same atom order as the VASP trajectory. The cell of `POSCAR-supercell`
-must be generated from `POSCAR-unitcell` by the supplied supercell matrix.
-
-## Quick start
-
-Inspect the trajectory before fitting:
+`vasprun.xml` can be used in the same way:
 
 ```bash
-symfc-vasp inspect \
-  --trajectory OUTCAR \
-  --unitcell POSCAR-unitcell \
-  --supercell POSCAR-supercell \
-  --dim 2 2 2 \
-  --skip 5000 \
-  --samples 3000 \
-  --selection uniform
+symfc-vasp full vasprun.xml --fc3
 ```
 
-Run FC2, FC3, band-path, and q-mesh analysis:
+By default, results are written in the current directory. The input trajectory
+is never modified.
+
+### Select trajectory frames
+
+This example discards 5,000 equilibration frames and uniformly selects 3,000
+frames from the remainder:
 
 ```bash
-symfc-vasp run \
-  --trajectory OUTCAR \
-  --unitcell POSCAR-unitcell \
-  --supercell POSCAR-supercell \
-  --dim 2 2 2 \
+symfc-vasp full OUTCAR \
   --skip 5000 \
   --samples 3000 \
   --selection uniform \
-  --order 2 3 \
-  --rc2 7 --rc3 4 \
-  --mass H 2.014 \
-  --mesh 11 11 11 \
-  --output run_N3000
+  --fc3
 ```
 
-`--mass` changes the isotope mass used by phonopy and phono3py without
-changing the element labels or refitting FC2/FC3. For a deuterated trajectory
-whose POSCAR still labels the isotope as H, use `--mass H 2.014`. The resolved
-`run.yaml` stores this as:
+Without selection options, all available frames are used.
 
-```yaml
-mass_overrides:
-  H: 2.014
-```
+### Use a known reference structure
 
-The applied and default masses are also recorded in
-`analysis/analysis_summary.yaml`. This makes H/D mass postprocessing explicit
-and reproducible.
-
-Selected configurations are centered by default. Per-atom mean displacement
-and mean force are removed so that the fitted force constants describe
-fluctuations around the sampled finite-temperature mean. Use
-`--no-center-selected` for an uncentered control.
-
-## Reuse `run.yaml`
-
-Each complete run writes its resolved settings to `run.yaml`. Reuse them with:
+When only a trajectory is supplied, the reference structure and integer
+supercell matrix are determined from its periodic mean structure. For a
+random-displacement calculation, the original unit cell can be supplied
+explicitly:
 
 ```bash
-symfc-vasp run \
-  --config previous_run/run.yaml \
-  --output rerun_N3000
+symfc-vasp full OUTCAR --unitcell POSCAR-unitcell
 ```
 
-Explicit CLI options override YAML values:
+Use `--supercell POSCAR-supercell` as well when its atom order must be
+preserved.
+
+### NAC and isotope masses
+
+Use a phonopy-format `BORN` file for non-analytical correction:
 
 ```bash
-symfc-vasp run \
-  --config previous_run/run.yaml \
-  --samples 5000 \
-  --output run_N5000
+symfc-vasp full OUTCAR --fc3 --born BORN
 ```
 
-The YAML files have distinct roles:
-
-- `run.yaml`: resolved input settings and provenance;
-- `analysis/analysis_summary.yaml`: dimensions of generated band and mesh data;
-- `FINAL_VALIDATION.yaml`: final completeness and finite-value checks.
-
-## Split a run into three stages
-
-Short scheduler queues can use stable FC and analysis boundaries.
+Masses can be changed during phonon and mode-Gruneisen analysis without
+refitting the force constants:
 
 ```bash
-# 1. Trajectory extraction and FC2/FC3 fitting
-symfc-vasp fit \
-  --config run.yaml \
-  --output run_N3000/force_constants
-
-# 2. Phonon dispersion and band-path mode-Gruneisen plots
-symfc-vasp band \
-  --config run.yaml \
-  --fit-dir run_N3000/force_constants \
-  --analysis-output run_N3000/analysis
-
-# 3. q-mesh mode-Gruneisen data and final validation
-symfc-vasp mesh \
-  --config run.yaml \
-  --fit-dir run_N3000/force_constants \
-  --analysis-output run_N3000/analysis
-symfc-vasp validate run_N3000
+symfc-vasp phonon . --mass H 2.014
+symfc-vasp gruneisen . --mass H 2.014
 ```
 
-`phonon` is an alias of `band`. `gruneisen` runs both band and mesh stages.
+## Separate stages
+
+The same workflow can be run one stage at a time:
+
+```bash
+symfc-vasp fit OUTCAR --fc3 --output fit
+symfc-vasp phonon fit --analysis-output analysis
+symfc-vasp gruneisen fit --analysis-output analysis
+```
+
+FC2 is fitted by default. `--fc3` enables FC3. No FC2 cutoff is applied unless
+`--rc2` is given; FC3 selects a cutoff automatically unless `--rc3` is given.
+
+Use `symfc-vasp <command> -h` for the complete option list.
 
 ## Outputs
 
+The fitting stage writes:
+
 ```text
-run_N3000/
-├── run.yaml
-├── FINAL_VALIDATION.yaml
-├── force_constants/
-│   ├── symfc_input.npz
-│   ├── selected_indices.txt
-│   ├── symfc_summary.yaml
-│   ├── FORCE_CONSTANTS
-│   ├── fc2.hdf5
-│   └── fc3.hdf5
-└── analysis/
-    ├── phonon_dispersion.tsv
-    ├── phonon_dispersion.pdf
-    ├── mode_gruneisen_qpath.tsv
-    ├── mode_gruneisen_q_resolved.pdf
-    ├── mode_gruneisen_on_phonon_dispersion.pdf
-    ├── gruneisen_qmesh_11x11x11.hdf5
-    ├── mode_gruneisen_qmesh_11x11x11.pdf
-    ├── phonopy_disp.yaml
-    ├── band.conf
-    ├── phono3py-gruneisen-band.conf
-    ├── phono3py-gruneisen-mesh.conf
-    ├── phonon_band.dat
-    ├── gruneisen_qmesh_11x11x11.dat
-    ├── plot_phonon_dispersion.gp
-    ├── plot_mode_gruneisen_q_resolved.gp
-    ├── plot_mode_gruneisen_on_phonon_dispersion.gp
-    ├── plot_mode_gruneisen_qmesh.gp
-    └── README_REPRODUCE.md
+FORCE_CONSTANTS
+fc2.hdf5
+fc3.hdf5                 # with --fc3
+POSCAR-unitcell
+POSCAR-supercell
+supercell_matrix.dat
+symfc_input.npz
+symfc_summary.yaml
+symfc_solver.log
 ```
 
-The analysis directory is a reproducible postprocessing bundle. The `.dat`
-files are human-readable and directly usable by gnuplot. Each `.gp` script
-defaults to PDF and can be opened interactively with, for example:
+Phonon and mode-Gruneisen analysis writes standard phonopy YAML files,
+human-readable tables, reusable configuration and plotting files, and PDF/PNG
+figures. Important files include:
 
-```bash
-gnuplot plot_phonon_dispersion.gp
-gnuplot -e 'plot_terminal="qt"' plot_phonon_dispersion.gp
+```text
+band.conf
+band.yaml
+phonopy_disp.yaml
+phonon_band.dat
+gruneisen_band.yaml
+gruneisen_mesh.yaml
+phonon_dispersion.pdf
+mode_gruneisen_q_resolved.pdf
+mode_gruneisen_on_phonon_dispersion.pdf
 ```
 
-Relative links to `FORCE_CONSTANTS`, `fc2.hdf5`, and `fc3.hdf5` are created
-automatically. Together with `POSCAR-unitcell` and the generated configuration
-files, they permit independent phonopy and phono3py reruns from `analysis/`.
-`phonopy_disp.yaml` embeds the unit cell, supercell matrix, effective masses,
-and fitted FC2, so the standard phonopy command works directly:
+## Complete example
 
-```bash
-phonopy -p band.conf -s
+[`examples/CoH3CN6`](examples/CoH3CN6) contains a compact 200-structure VASP
+MLFF `OUTCAR` and harmonic inputs for generating the same type of trajectory.
+The example can be run immediately or repeated with a user-provided `ML_FF`
+and licensed `POTCAR`.
+
+## Python API
+
+```python
+from pathlib import Path
+
+from symfc_vasp import FitConfig, TrajectoryConfig, fit_force_constants
+
+result = fit_force_constants(
+    FitConfig(
+        trajectory=TrajectoryConfig(Path("OUTCAR")),
+        output_dir=Path("fit"),
+    )
+)
+
+print(result.fc2.shape)
 ```
 
-## Parallel execution
+## Citation
 
-symfc is used as one Python process. Allocate one scheduler task and multiple
-CPUs per task. NumPy, SciPy, and optional MKL-backed kernels use the available
-threads. Do not launch one Python process per MPI rank.
-
-```bash
-export OMP_NUM_THREADS=32
-export MKL_NUM_THREADS=32
-export OPENBLAS_NUM_THREADS=1
-symfc-vasp fit --config run.yaml --output run/force_constants
-```
-
-Portable examples are provided under [`examples/`](examples/).
+Please cite symfc, phonopy, phono3py, spglib, and seekpath as appropriate when
+publishing results produced with this workflow.

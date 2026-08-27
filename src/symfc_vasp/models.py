@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -16,6 +17,7 @@ class TrajectoryDataset:
     source_indices: np.ndarray
     source_path: Path
     source_format: str
+    symbols: tuple[str, ...] | None = None
 
     def validate(self, natom: int | None = None) -> None:
         if self.positions.ndim != 3 or self.positions.shape[-1] != 3:
@@ -34,3 +36,54 @@ class TrajectoryDataset:
             if not np.isfinite(self.cells).all():
                 raise ValueError("cell history contains NaN or Inf")
 
+
+@dataclass(frozen=True)
+class ReferenceResult:
+    """Reference structures and mapping used by a force-constant fit."""
+
+    unitcell_path: Path
+    supercell_path: Path
+    supercell_matrix: np.ndarray
+    generated_to_source: np.ndarray
+    report: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class FitResult:
+    """Numerical force constants and provenance produced by symfc."""
+
+    output_dir: Path
+    fc2: np.ndarray
+    fc3: np.ndarray | None
+    reference: ReferenceResult
+    diagnostics: dict[str, Any]
+    files: tuple[Path, ...]
+
+
+@dataclass(frozen=True)
+class PhononResult:
+    """Phonon band arrays and reproducibility files."""
+
+    output_dir: Path
+    qpoints: np.ndarray
+    distances: np.ndarray
+    frequencies: np.ndarray
+    labels: tuple[str, ...]
+    diagnostics: dict[str, Any]
+    files: tuple[Path, ...]
+
+
+@dataclass(frozen=True)
+class GruneisenResult:
+    """Band-path and mesh tensor mode-Gruneisen arrays."""
+
+    output_dir: Path
+    band_qpoints: np.ndarray
+    band_frequencies: np.ndarray
+    band_tensors: np.ndarray
+    mesh_qpoints: np.ndarray
+    mesh_weights: np.ndarray
+    mesh_frequencies: np.ndarray
+    mesh_tensors: np.ndarray
+    diagnostics: dict[str, Any]
+    files: tuple[Path, ...]
