@@ -1,8 +1,13 @@
 # symfc-vasp
 
-`symfc-vasp` fits symmetry-adapted force constants from fixed-cell VASP
-trajectories and calculates phonon dispersions and mode-Gruneisen parameters.
-It accepts `OUTCAR` and `vasprun.xml`. NPT trajectories are not supported.
+`symfc-vasp` provides an end-to-end workflow for analyzing finite-temperature
+VASP trajectories. Starting from an `OUTCAR` or `vasprun.xml`, it reconstructs
+a symmetry-refined reference structure, fits second- and third-order force
+constants with symfc, and calculates phonon dispersions and tensor
+mode-Gruneisen parameters using phonopy and phono3py.
+
+The input trajectory must use a fixed simulation cell (NPT trajectories are
+not supported).
 
 ## Installation
 
