@@ -6,4 +6,4 @@ build/
 dist/
 *.egg-info/
 validation_artifacts/
-
+validation/mp_reference_stress/artifacts/

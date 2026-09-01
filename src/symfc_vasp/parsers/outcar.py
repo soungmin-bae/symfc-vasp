@@ -27,6 +27,7 @@ class OutcarMetadata:
     """Structure information recoverable without a companion POSCAR."""
 
     symbols: tuple[str, ...]
+    masses: tuple[float, ...] | None
     cell: np.ndarray
     lattice_records: int
 
@@ -39,6 +40,7 @@ def parse_outcar_metadata(path: Path, cell_tolerance: float = 1e-6) -> OutcarMet
     expression is used instead of ``str.split`` for those records.
     """
     vrhfin: list[str] = []
+    pomass: list[float] = []
     counts: list[int] | None = None
     cells: list[np.ndarray] = []
     lines = Path(path).read_text(errors="replace").splitlines()
@@ -46,6 +48,9 @@ def parse_outcar_metadata(path: Path, cell_tolerance: float = 1e-6) -> OutcarMet
         match = re.search(r"VRHFIN\s*=\s*([A-Za-z]+)", line)
         if match:
             vrhfin.append(match.group(1))
+        match = re.search(r"POMASS\s*=\s*(" + _NUMBER.pattern + r")", line)
+        if match:
+            pomass.append(float(match.group(1)))
         match = re.search(r"ions per type\s*=\s*(.*)", line)
         if match:
             counts = [int(value) for value in match.group(1).split()]
@@ -81,7 +86,19 @@ def parse_outcar_metadata(path: Path, cell_tolerance: float = 1e-6) -> OutcarMet
                 "symfc-vasp accepts fixed-cell NVT or fixed-cell IBRION=11 data only"
             )
     symbols = tuple(symbol for symbol, count in zip(vrhfin, counts) for _ in range(count))
-    return OutcarMetadata(symbols=symbols, cell=cell, lattice_records=len(cells))
+    masses = None
+    if len(pomass) >= len(counts):
+        masses = tuple(
+            mass
+            for mass, count in zip(pomass[:len(counts)], counts)
+            for _ in range(count)
+        )
+    return OutcarMetadata(
+        symbols=symbols,
+        masses=masses,
+        cell=cell,
+        lattice_records=len(cells),
+    )
 
 
 def scan_outcar_summary(path: Path) -> OutcarScan:
