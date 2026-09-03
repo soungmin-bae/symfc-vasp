@@ -18,6 +18,9 @@ class TrajectoryDataset:
     source_path: Path
     source_format: str
     symbols: tuple[str, ...] | None = None
+    energies: np.ndarray | None = None
+    energy_field: str | None = None
+    energy_metadata: dict[str, Any] | None = None
 
     def validate(self, natom: int | None = None) -> None:
         if self.positions.ndim != 3 or self.positions.shape[-1] != 3:
@@ -35,6 +38,16 @@ class TrajectoryDataset:
                 raise ValueError(f"cells must have shape (frames, 3, 3), got {self.cells.shape}")
             if not np.isfinite(self.cells).all():
                 raise ValueError("cell history contains NaN or Inf")
+        if self.energies is not None:
+            if self.energies.shape != (len(self.positions),):
+                raise ValueError(
+                    "energies must have shape (frames,), got "
+                    f"{self.energies.shape}"
+                )
+            if not np.isfinite(self.energies).all():
+                raise ValueError("trajectory energies contain NaN or Inf")
+            if self.energy_field is None:
+                raise ValueError("energy_field is required when energies are present")
 
 
 @dataclass(frozen=True)
@@ -58,6 +71,7 @@ class FitResult:
     reference: ReferenceResult
     diagnostics: dict[str, Any]
     files: tuple[Path, ...]
+    effective_energy: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)

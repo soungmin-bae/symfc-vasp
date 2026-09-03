@@ -6,4 +6,5 @@
 | [KZP](KZP) | 200 frames, 288 atoms | R-3c unit cell reconstructed from `OUTCAR` | FC2 and phonon dispersion |
 
 Each directory contains a compressed fixed-cell VASP MLFF `OUTCAR` and the
-commands needed to run the example.
+commands needed to run the example. Both examples also exercise aligned ML
+potential-energy parsing and effective harmonic energy-offset output.

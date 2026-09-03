@@ -29,12 +29,21 @@ def write_config(path: Path) -> None:
                     "symprec": 1e-5,
                     "batch_size": 20,
                 },
+                "effective_energy": {
+                    "enabled": True,
+                    "field": "energy_without_entropy",
+                    "bootstrap_samples": 50,
+                    "block_size": 25,
+                },
                 "analysis": {
                     "band_points": 21,
                     "mesh": [11, 11, 11],
                     "frequency_cutoff_THz": 0.05,
                     "gruneisen_plot_range": [-10, 20],
                     "frequency_plot_range_cm1": [-800, 2300],
+                    "thermal_min_temperature_K": 50,
+                    "thermal_max_temperature_K": 500,
+                    "thermal_temperature_step_K": 25,
                 },
             },
             sort_keys=False,
@@ -57,6 +66,13 @@ def test_run_yaml_is_reusable_and_cli_wins(tmp_path):
     assert args.gmin == -10
     assert args.mass == ["H", "2.014"]
     assert args.output == Path("rerun")
+    assert args.energy_field == "energy_without_entropy"
+    assert args.effective_energy_offset is True
+    assert args.energy_bootstrap_samples == 50
+    assert args.energy_block_size == 25
+    assert args.tmin == 50
+    assert args.tmax == 500
+    assert args.tstep == 25
 
 
 def test_split_stage_parsers_load_relevant_config(tmp_path):

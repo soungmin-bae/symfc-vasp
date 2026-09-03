@@ -30,7 +30,9 @@ symfc-vasp full OUTCAR \
 
 The calculation uses the supplied 16-atom P-31m harmonic reference and infers
 its 2x2x2, 128-atom supercell relation. Fitted force constants and all analysis
-files are written under `run/`.
+files are written under `run/`. Because the bundled MLFF `OUTCAR` contains one
+aligned potential energy per force frame, the run also writes phonon DOS,
+harmonic thermal properties, and `tdep_energy_offset.yaml`.
 
 For a faster FC2-only check, omit `--fc3`:
 

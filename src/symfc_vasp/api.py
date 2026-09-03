@@ -37,6 +37,7 @@ class TrajectoryConfig:
     selection: SelectionMethod = "stride"
     seed: int = 0
     cell_tolerance: float = 1e-6
+    energy_field: str = "auto"
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,9 @@ class FitConfig:
     use_mkl: bool = True
     verbose: bool = False
     overwrite: bool = False
+    effective_energy_offset: bool | None = None
+    energy_bootstrap_samples: int = 200
+    energy_block_size: int | None = None
 
     @classmethod
     def from_namespace(cls, args) -> "FitConfig":
@@ -76,6 +80,7 @@ class FitConfig:
                 path=Path(args.trajectory), skip=args.skip, stop=args.stop,
                 samples=args.samples, stride=args.stride, selection=args.selection,
                 seed=args.seed, cell_tolerance=args.cell_tolerance,
+                energy_field=args.energy_field,
             )
         mode = "trajectory" if args.reference_mode == "outcar" else args.reference_mode
         return cls(
@@ -93,6 +98,9 @@ class FitConfig:
             center_selected=args.center_selected, batch_size=args.batch_size,
             metric_samples=args.metric_samples, use_mkl=args.use_mkl,
             verbose=args.verbose, overwrite=getattr(args, "force", False),
+            effective_energy_offset=args.effective_energy_offset,
+            energy_bootstrap_samples=args.energy_bootstrap_samples,
+            energy_block_size=args.energy_block_size,
         )
 
 
@@ -111,6 +119,9 @@ class AnalysisConfig:
     mass_overrides: dict[str, float] = field(default_factory=dict)
     atom_mass_overrides: dict[int, float] = field(default_factory=dict)
     overwrite: bool = False
+    thermal_min_temperature: float = 0.0
+    thermal_max_temperature: float = 1000.0
+    thermal_temperature_step: float = 10.0
 
     @classmethod
     def from_namespace(cls, args, *, fit_dir: Path | None = None) -> "AnalysisConfig":
@@ -126,6 +137,9 @@ class AnalysisConfig:
                 getattr(args, "mass_index", None)
             ),
             overwrite=getattr(args, "force", False),
+            thermal_min_temperature=args.tmin,
+            thermal_max_temperature=args.tmax,
+            thermal_temperature_step=args.tstep,
         )
 
 
@@ -154,6 +168,7 @@ def _fit_namespace(config: FitConfig) -> SimpleNamespace:
         selection=trajectory.selection if trajectory else "stride",
         seed=trajectory.seed if trajectory else 0,
         cell_tolerance=trajectory.cell_tolerance if trajectory else 1e-6,
+        energy_field=trajectory.energy_field if trajectory else "auto",
         center_selected=config.center_selected,
         order=config.orders,
         fc3=3 in config.orders,
@@ -168,6 +183,9 @@ def _fit_namespace(config: FitConfig) -> SimpleNamespace:
         verbose=config.verbose,
         output=config.output_dir,
         force=config.overwrite,
+        effective_energy_offset=config.effective_energy_offset,
+        energy_bootstrap_samples=config.energy_bootstrap_samples,
+        energy_block_size=config.energy_block_size,
     )
 
 
@@ -188,6 +206,9 @@ def _analysis_namespace(config: AnalysisConfig) -> SimpleNamespace:
         fmax_cm1=config.frequency_range_cm1[1], born=config.born,
         mass=masses or None, mass_index=indexed or None,
         force=config.overwrite,
+        tmin=config.thermal_min_temperature,
+        tmax=config.thermal_max_temperature,
+        tstep=config.thermal_temperature_step,
     )
 
 
@@ -206,10 +227,20 @@ def read_trajectory(config: TrajectoryConfig) -> TrajectoryDataset:
         total, skip=config.skip, stop=config.stop, samples=config.samples,
         stride=config.stride, method=config.selection, seed=config.seed,
     )
-    dataset = parse_trajectory(path, indices, cell_tolerance=config.cell_tolerance)
+    dataset = parse_trajectory(
+        path,
+        indices,
+        cell_tolerance=config.cell_tolerance,
+        energy_field=config.energy_field,
+    )
     dataset = TrajectoryDataset(
         dataset.positions, dataset.forces, dataset.cells, dataset.source_indices,
-        dataset.source_path, dataset.source_format, symbols,
+        dataset.source_path,
+        dataset.source_format,
+        symbols,
+        dataset.energies,
+        dataset.energy_field,
+        dataset.energy_metadata,
     )
     dataset.validate(len(symbols))
     if dataset.cells is not None:
@@ -297,7 +328,16 @@ def _read_fit_result(output: Path) -> FitResult:
     fc2 = _hdf5_array(output / "fc2.hdf5", ("fc2", "force_constants"))
     fc3_path = output / "fc3.hdf5"
     fc3 = _hdf5_array(fc3_path, ("fc3", "force_constants")) if fc3_path.is_file() else None
-    return FitResult(output, fc2, fc3, _read_reference(output), _read_yaml(output / "symfc_summary.yaml"), _owned_files(output))
+    diagnostics = _read_yaml(output / "symfc_summary.yaml")
+    return FitResult(
+        output,
+        fc2,
+        fc3,
+        _read_reference(output),
+        diagnostics,
+        _owned_files(output),
+        diagnostics.get("effective_energy_offset"),
+    )
 
 
 def _read_phonon_result(output: Path) -> PhononResult:

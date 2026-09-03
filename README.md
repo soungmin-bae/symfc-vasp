@@ -4,7 +4,9 @@
 VASP trajectories. Starting from an `OUTCAR` or `vasprun.xml`, it reconstructs
 a symmetry-refined reference structure, fits second- and third-order force
 constants with symfc, and calculates phonon dispersions and tensor
-mode-Gruneisen parameters using phonopy and phono3py.
+mode-Gruneisen parameters using phonopy and phono3py. When snapshot potential
+energies are present, it also evaluates the TDEP-style effective harmonic
+energy offset using the same frames and displacements as the force-constant fit.
 
 The input trajectory must use a fixed simulation cell (NPT trajectories are
 not supported).
@@ -56,6 +58,21 @@ symfc-vasp full OUTCAR \
 ```
 
 Without selection options, all available frames are used.
+
+### Effective energy offset
+
+For an `OUTCAR` or `vasprun.xml` containing one potential energy per
+position/force frame, the fitting stage automatically calculates
+
+```text
+U0_eff = mean(E_potential - 0.5 * u.T @ FC2 @ u)
+```
+
+The selected energy field is printed and recorded explicitly. Override it with
+`--energy-field`, or disable this calculation with
+`--no-effective-energy-offset`. The output includes block uncertainty,
+effective sample size, drift and non-Gaussian distribution diagnostics. It
+does not split a trajectory into structural basins automatically.
 
 ### Use a known reference structure
 
@@ -116,6 +133,10 @@ supercell_matrix.dat
 symfc_input.npz
 symfc_summary.yaml
 symfc_solver.log
+tdep_energy_offset.yaml       # when aligned potential energies are available
+tdep_energy_residuals.tsv
+tdep_energy_diagnostics.pdf
+tdep_energy_diagnostics.png
 ```
 
 Phonon and mode-Gruneisen analysis writes standard phonopy YAML files,
@@ -127,12 +148,24 @@ band.conf
 band.yaml
 phonopy_disp.yaml
 phonon_band.dat
+phonon_dos.dat
+phonon_dos.pdf
+phonon_dos.png
+thermal_properties.yaml
+thermal_properties.tsv
+thermal_properties.pdf
+thermal_properties.png
 gruneisen_band.yaml
 gruneisen_mesh.yaml
 phonon_dispersion.pdf
 mode_gruneisen_q_resolved.pdf
 mode_gruneisen_on_phonon_dispersion.pdf
 ```
+
+The thermal-property files contain the harmonic phonon contribution from the
+fitted FC2. For PIMD data, the VASP potential-energy field excludes
+ring-polymer spring and kinetic terms; `U0_eff` is therefore an effective
+potential-energy offset, not the complete PIMD free energy.
 
 ## Examples
 

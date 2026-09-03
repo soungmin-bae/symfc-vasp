@@ -61,6 +61,12 @@ def _config_tokens(command: str, path: Path) -> list[str]:
         _append(tokens, "--map-tolerance", fc.get("map_tolerance_A"))
         _append(tokens, "--batch-size", fc.get("batch_size"))
         _append(tokens, "--metric-samples", fc.get("metric_samples"))
+        energy = data.get("effective_energy", {}) or {}
+        _append(tokens, "--energy-field", energy.get("field"))
+        _append(tokens, "--energy-bootstrap-samples", energy.get("bootstrap_samples"))
+        _append(tokens, "--energy-block-size", energy.get("block_size"))
+        if energy.get("enabled") is not None:
+            tokens.append("--effective-energy-offset" if energy["enabled"] else "--no-effective-energy-offset")
         if fc.get("use_mkl") is False:
             tokens.append("--no-mkl")
 
@@ -82,6 +88,9 @@ def _config_tokens(command: str, path: Path) -> list[str]:
         _append(tokens, "--band-points", analysis.get("band_points"))
         _append(tokens, "--mesh", analysis.get("mesh"))
         _append(tokens, "--frequency-cutoff", analysis.get("frequency_cutoff_THz"))
+        _append(tokens, "--tmin", analysis.get("thermal_min_temperature_K"))
+        _append(tokens, "--tmax", analysis.get("thermal_max_temperature_K"))
+        _append(tokens, "--tstep", analysis.get("thermal_temperature_step_K"))
         limits = analysis.get("gruneisen_plot_range")
         if limits:
             _append(tokens, "--gmin", limits[0])
@@ -130,11 +139,29 @@ def validate_fit_contract(args) -> None:
     for label, path in (("unitcell", unitcell), ("supercell", supercell)):
         if path is not None and not path.is_file():
             errors.append(f"{label} file does not exist: {path}")
+    if getattr(args, "energy_bootstrap_samples", 0) < 0:
+        errors.append("--energy-bootstrap-samples must be non-negative")
+    if getattr(args, "energy_block_size", None) is not None and args.energy_block_size < 1:
+        errors.append("--energy-block-size must be positive")
     if errors:
         message = ["Invalid fitting input:", *(f"  - {error}" for error in errors), "", "Examples:",
                    "  symfc-vasp fit OUTCAR", "  symfc-vasp fit vasprun.xml --fc3",
                    "  symfc-vasp full OUTCAR --fc3"]
         raise ValueError("\n".join(message))
+
+
+def validate_analysis_contract(args) -> None:
+    errors: list[str] = []
+    if any(value < 1 for value in args.mesh):
+        errors.append("--mesh values must be positive")
+    if args.band_points < 2:
+        errors.append("--band-points must be at least 2")
+    if args.tstep <= 0:
+        errors.append("--tstep must be positive")
+    if args.tmax < args.tmin:
+        errors.append("--tmax must be greater than or equal to --tmin")
+    if errors:
+        raise ValueError("Invalid analysis input:\n" + "\n".join(f"  - {item}" for item in errors))
 
 
 def _add_full_analysis(parser: argparse.ArgumentParser) -> None:
@@ -146,6 +173,9 @@ def _add_full_analysis(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--frequency-cutoff", type=float, default=0.05)
     parser.add_argument("--fmin-cm1", type=float, default=-100.0)
     parser.add_argument("--fmax-cm1", type=float, default=2300.0)
+    parser.add_argument("--tmin", type=float, default=0.0)
+    parser.add_argument("--tmax", type=float, default=1000.0)
+    parser.add_argument("--tstep", type=float, default=10.0)
     parser.add_argument("--born", type=Path, help="phonopy-format BORN file for NAC; copied to analysis.")
     add_mass_overrides(parser)
 
@@ -160,10 +190,11 @@ def parser() -> argparse.ArgumentParser:
 
     fit = commands.add_parser(
         "fit", formatter_class=argparse.RawDescriptionHelpFormatter,
-        help="Fit FC2 (or FC2+FC3 with --fc3) in the current directory.",
+        help="Fit FC2 (or FC2+FC3) and evaluate aligned snapshot energies.",
         epilog=("Examples:\n  symfc-vasp fit OUTCAR\n  symfc-vasp fit vasprun.xml --fc3\n"
                 "  symfc-vasp fit OUTCAR --unitcell POSCAR-unitcell --samples 3000 --selection uniform\n\n"
-                "Writes FC files and provenance beside the trajectory. The concise progress log is shown\n"
+                "Writes FC files and, when energies are available, the TDEP-style U0_eff diagnostic.\n"
+                "The concise progress log is shown\n"
                 "in the terminal; use --verbose to also stream the complete symfc solver log."),
     )
     add_config(fit)
@@ -171,10 +202,10 @@ def parser() -> argparse.ArgumentParser:
 
     phonon = commands.add_parser(
         "phonon", formatter_class=argparse.RawDescriptionHelpFormatter,
-        help="Create FC2 phonon dispersion in the current directory.",
+        help="Create FC2 phonon band, DOS, and harmonic thermal properties.",
         epilog=("Examples:\n  symfc-vasp phonon .\n  symfc-vasp phonon fit-dir --analysis-output analysis\n\n"
                 "Use '.' explicitly for the current directory. It overwrites package-generated\n"
-                "phonopy outputs and writes band.conf, phonopy_disp.yaml, band.yaml, and band.pdf."),
+                "phonopy outputs and writes band, DOS, and thermal-property data and plots."),
     )
     add_config(phonon)
     add_analysis(phonon)
@@ -191,11 +222,11 @@ def parser() -> argparse.ArgumentParser:
 
     full = commands.add_parser(
         "full", formatter_class=argparse.RawDescriptionHelpFormatter,
-        help="Fit and create phonon output; add --fc3 to also create Gruneisen output.",
+        help="Fit and create energy/phonon outputs; add --fc3 for Gruneisen outputs.",
         epilog=("Examples:\n  symfc-vasp full OUTCAR\n  symfc-vasp full OUTCAR --fc3 --mesh 11 11 11\n"
                 "  symfc-vasp full vasprun.xml --unitcell POSCAR-unitcell --born BORN --mass H 2.014\n\n"
-                "Without --fc3 this ends after FC2 fitting and phonon dispersion. With --fc3 it also\n"
-                "writes band-path and q-mesh mode-Gruneisen data and plots."),
+                "Without --fc3 this writes FC2, phonon band, DOS, and harmonic thermal properties.\n"
+                "With --fc3 it also writes band-path and q-mesh mode-Gruneisen data and plots."),
     )
     add_config(full)
     add_common_fit(full)
@@ -229,11 +260,19 @@ def _write_full_config(args, fit_dir: Path) -> None:
                             "symprec": args.symprec, "map_tolerance_A": args.map_tolerance,
                             "batch_size": args.batch_size, "metric_samples": args.metric_samples,
                             "use_mkl": args.use_mkl},
+        "effective_energy": {
+            "enabled": args.effective_energy_offset,
+            "field": args.energy_field,
+            "bootstrap_samples": args.energy_bootstrap_samples,
+            "block_size": args.energy_block_size,
+        },
         "mass_overrides": engine.parse_mass_overrides(args.mass),
         "atom_mass_overrides": engine.parse_atom_mass_overrides(
             getattr(args, "mass_index", None)
         ),
         "analysis": {"band_points": args.band_points, "mesh": list(args.mesh), "frequency_cutoff_THz": args.frequency_cutoff,
+                     "thermal_min_temperature_K": args.tmin, "thermal_max_temperature_K": args.tmax,
+                     "thermal_temperature_step_K": args.tstep,
                      "gruneisen_plot_range": [args.gmin, args.gmax], "frequency_plot_range_cm1": [args.fmin_cm1, args.fmax_cm1]},
         "nac": {"born": str(args.born.resolve()) if args.born else None},
     }
@@ -258,6 +297,11 @@ def main(argv=None) -> None:
         except ValueError as exc:
             parser().error(str(exc))
         _normalise_orders(args)
+    if args.command in {"phonon", "gruneisen", "full"}:
+        try:
+            validate_analysis_contract(args)
+        except ValueError as exc:
+            parser().error(str(exc))
 
     if args.command == "fit":
         fit_force_constants(FitConfig.from_namespace(args))

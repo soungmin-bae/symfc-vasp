@@ -68,6 +68,24 @@ def add_common_fit(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--cell-tolerance", type=float, default=1e-6)
     parser.add_argument(
+        "--energy-field",
+        choices=("auto", "ml_energy_without_entropy", "energy_without_entropy", "sigma0", "free_energy"),
+        default="auto",
+        help="Potential-energy record paired with each force frame (default: one consistent field selected automatically).",
+    )
+    parser.add_argument(
+        "--effective-energy-offset",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Calculate the TDEP-style FC2 energy offset when energies are available (default: automatic).",
+    )
+    parser.add_argument("--energy-bootstrap-samples", type=int, default=200)
+    parser.add_argument(
+        "--energy-block-size",
+        type=int,
+        help="Selected-frame block length for correlated energy uncertainty (default: automatic).",
+    )
+    parser.add_argument(
         "--center-selected", action=argparse.BooleanOptionalAction, default=True,
         help="Subtract selected mean displacement and force before fitting (default: enabled).",
     )
@@ -124,6 +142,9 @@ def add_analysis(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--frequency-cutoff", type=float, default=0.05)
     parser.add_argument("--fmin-cm1", type=float, default=-100.0)
     parser.add_argument("--fmax-cm1", type=float, default=2300.0)
+    parser.add_argument("--tmin", type=float, default=0.0)
+    parser.add_argument("--tmax", type=float, default=1000.0)
+    parser.add_argument("--tstep", type=float, default=10.0)
     parser.add_argument(
         "--born", type=Path,
         help="phonopy-format BORN file for non-analytical correction.",

@@ -22,7 +22,6 @@ import platform
 import re
 import resource
 import shutil
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -60,29 +59,34 @@ def stage(name: str, message: str) -> None:
     print(f"[{name}] {message}", flush=True)
 
 
-def write_phonopy_bandplot_data(output: Path) -> Path:
-    """Write the exact two-column gnuplot data emitted by phonopy-bandplot."""
-    command = shutil.which("phonopy-bandplot")
-    if command is None:
-        raise RuntimeError(
-            "phonopy-bandplot was not found on PATH. Install phonopy with its CLI entry points "
-            "to write phonopy-band.dat."
-        )
-    result = subprocess.run(
-        [command, "--gnuplot", "band.yaml"],
-        cwd=output,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    # phonopy 4.4 on macOS can return status 1 after printing a complete
-    # --gnuplot dataset. The emitted data is the contract we need here, so
-    # accept that case and fail only when no usable dataset was produced.
-    if not result.stdout.strip():
-        detail = result.stderr.strip() or f"exit code {result.returncode}"
-        raise RuntimeError(f"phonopy-bandplot --gnuplot band.yaml failed: {detail}")
+def write_phonopy_bandplot_data(output: Path, distances, frequencies) -> Path:
+    """Write phonopy-bandplot-compatible two-column gnuplot data in-process."""
+    distance_segments = [np.asarray(values, dtype=float) for values in distances]
+    frequency_segments = [np.asarray(values, dtype=float) for values in frequencies]
+    if not distance_segments or len(distance_segments) != len(frequency_segments):
+        raise ValueError("band distances and frequencies have incompatible segment counts")
+    mode_count = frequency_segments[0].shape[1]
+    for distance, frequency in zip(
+        distance_segments, frequency_segments, strict=True
+    ):
+        if frequency.ndim != 2 or frequency.shape != (len(distance), mode_count):
+            raise ValueError(
+                "band distances and frequencies have incompatible shapes: "
+                f"distance={distance.shape}, frequency={frequency.shape}"
+            )
     destination = output / "phonopy-band.dat"
-    destination.write_text(result.stdout)
+    endpoints = [float(distance_segments[0][0])]
+    endpoints.extend(float(distance[-1]) for distance in distance_segments)
+    with destination.open("w") as handle:
+        handle.write("# End points of segments:\n")
+        handle.write("#   " + " ".join(f"{value:.8f}" for value in endpoints) + " \n")
+        for mode in range(mode_count):
+            for distance, frequency in zip(
+                distance_segments, frequency_segments, strict=True
+            ):
+                for xvalue, yvalue in zip(distance, frequency[:, mode], strict=True):
+                    handle.write(f"{float(xvalue):.6f} {float(yvalue):.6f}\n")
+                handle.write("\n")
     return destination
 
 
@@ -614,9 +618,17 @@ def prepare_outcar_only_dataset(args, output: Path) -> tuple[object, object, np.
     )
     stage("reference", "Building the periodic mean structure from the selected trajectory frames")
     dataset = parse_trajectory(
-        trajectory, source_indices, cell_tolerance=args.cell_tolerance
+        trajectory,
+        source_indices,
+        cell_tolerance=args.cell_tolerance,
+        energy_field=args.energy_field,
     )
     dataset.validate(natom)
+    if dataset.energies is not None:
+        stage(
+            "energy",
+            f"Aligned {len(dataset.energies)} {dataset.energy_field} records with the selected position/force frames",
+        )
     checked_cells = metadata.lattice_records if metadata is not None else total_frames
     stage(
         "trajectory",
@@ -785,6 +797,8 @@ def prepare_outcar_only_dataset(args, output: Path) -> tuple[object, object, np.
             "path": str(trajectory), "format": dataset.source_format, "sha256": sha256(trajectory),
             "natom": natom, "force_blocks": total_frames,
             "ml_force_blocks": scan.ml_frames if scan is not None else None,
+            "energy_records": scan.energy_records if scan is not None else None,
+            "energy": dataset.energy_metadata,
         },
         "selection": {
             "skip": args.skip, "stop": args.stop, "method": args.selection,
@@ -807,12 +821,21 @@ def prepare_outcar_only_dataset(args, output: Path) -> tuple[object, object, np.
             "max_abs_force_eV_per_A": float(np.max(np.abs(forces))), "centering": centering,
         },
     }
-    np.savez_compressed(
-        output / "symfc_input.npz", displacements=displacements, forces=forces,
-        source_indices=source_indices, generated_to_vasp=mapping,
-        symbols=np.asarray(generated.symbols), cell=cell, scaled_positions=ref_frac,
-        mean_displacement=mean_displacement, mean_force=mean_force,
-    )
+    dataset_payload = {
+        "displacements": displacements,
+        "forces": forces,
+        "source_indices": source_indices,
+        "generated_to_vasp": mapping,
+        "symbols": np.asarray(generated.symbols),
+        "cell": cell,
+        "scaled_positions": ref_frac,
+        "mean_displacement": mean_displacement,
+        "mean_force": mean_force,
+    }
+    if dataset.energies is not None:
+        dataset_payload["energies"] = dataset.energies
+        dataset_payload["energy_field"] = np.asarray(dataset.energy_field)
+    np.savez_compressed(output / "symfc_input.npz", **dataset_payload)
     np.savetxt(output / "selected_indices.txt", source_indices, fmt="%d")
     dataset_path = output / "symfc_input.npz"
     stage(
@@ -860,6 +883,25 @@ def prepare_dataset(args, output: Path) -> tuple[object, object, np.ndarray, np.
         saved = np.load(dataset_path)
         displacements = np.asarray(saved["displacements"], dtype=float)
         forces = np.asarray(saved["forces"], dtype=float)
+        energies = (
+            np.asarray(saved["energies"], dtype=float)
+            if "energies" in saved
+            else None
+        )
+        energy_field = (
+            str(np.asarray(saved["energy_field"]).item())
+            if "energy_field" in saved
+            else None
+        )
+        if (
+            args.energy_field != "auto"
+            and energy_field is not None
+            and energy_field != args.energy_field
+        ):
+            raise ValueError(
+                f"saved dataset energy field is {energy_field!r}, not requested "
+                f"{args.energy_field!r}"
+            )
         source_indices = np.asarray(saved["source_indices"], dtype=int)
         natom = displacements.shape[1]
         if displacements.shape != forces.shape or displacements.shape[-1] != 3:
@@ -887,6 +929,8 @@ def prepare_dataset(args, output: Path) -> tuple[object, object, np.ndarray, np.
             ) from exc
         displacements = displacements[dataset_selection]
         forces = forces[dataset_selection]
+        if energies is not None:
+            energies = energies[dataset_selection]
         source_indices = source_indices[dataset_selection]
         nframes = parent_frames
         nframes_ml = None
@@ -897,6 +941,13 @@ def prepare_dataset(args, output: Path) -> tuple[object, object, np.ndarray, np.
             "natom": natom,
             "force_blocks": None,
             "ml_force_blocks": None,
+            "energy": {
+                "requested": args.energy_field,
+                "selected": energy_field,
+                "available_records": len(energies) if energies is not None else 0,
+                "includes_ionic_kinetic_energy": False,
+                "includes_pimd_spring_energy": False,
+            },
         }
     else:
         trajectory = args.trajectory
@@ -951,9 +1002,19 @@ def prepare_dataset(args, output: Path) -> tuple[object, object, np.ndarray, np.
             f"using {len(source_indices)} frames [{source_indices[0]}..{source_indices[-1]}]",
         )
         dataset = parse_trajectory(
-            trajectory, source_indices, cell_tolerance=args.cell_tolerance
+            trajectory,
+            source_indices,
+            cell_tolerance=args.cell_tolerance,
+            energy_field=args.energy_field,
         )
         dataset.validate(natom)
+        energies = dataset.energies
+        energy_field = dataset.energy_field
+        if energies is not None:
+            stage(
+                "energy",
+                f"Aligned {len(energies)} {energy_field} records with the selected position/force frames",
+            )
         checked_cells = outcar_metadata.lattice_records if is_outcar else nframes
         stage(
             "trajectory",
@@ -976,6 +1037,7 @@ def prepare_dataset(args, output: Path) -> tuple[object, object, np.ndarray, np.
             "path": str(trajectory.resolve()), "format": dataset.source_format,
             "sha256": sha256(trajectory), "natom": natom,
             "force_blocks": nframes, "ml_force_blocks": nframes_ml,
+            "energy": dataset.energy_metadata,
         }
 
     stage(
@@ -1065,18 +1127,21 @@ def prepare_dataset(args, output: Path) -> tuple[object, object, np.ndarray, np.
             "centering": centering,
         },
     }
-    np.savez_compressed(
-        output / "symfc_input.npz",
-        displacements=displacements,
-        forces=forces,
-        source_indices=source_indices,
-        generated_to_vasp=mapping,
-        symbols=np.asarray(generated.symbols),
-        cell=np.asarray(generated.cell),
-        scaled_positions=np.asarray(generated.scaled_positions),
-        mean_displacement=mean_displacement,
-        mean_force=mean_force,
-    )
+    dataset_payload = {
+        "displacements": displacements,
+        "forces": forces,
+        "source_indices": source_indices,
+        "generated_to_vasp": mapping,
+        "symbols": np.asarray(generated.symbols),
+        "cell": np.asarray(generated.cell),
+        "scaled_positions": np.asarray(generated.scaled_positions),
+        "mean_displacement": mean_displacement,
+        "mean_force": mean_force,
+    }
+    if energies is not None:
+        dataset_payload["energies"] = energies
+        dataset_payload["energy_field"] = np.asarray(energy_field)
+    np.savez_compressed(output / "symfc_input.npz", **dataset_payload)
     np.savetxt(output / "selected_indices.txt", source_indices, fmt="%d")
     dataset_path = output / "symfc_input.npz"
     stage(
@@ -1186,6 +1251,12 @@ def fit(args) -> Path:
             "symprec": args.symprec,
             "map_tolerance_A": args.map_tolerance,
             "batch_size": args.batch_size,
+        },
+        "effective_energy": {
+            "enabled": args.effective_energy_offset,
+            "field": args.energy_field,
+            "bootstrap_samples": args.energy_bootstrap_samples,
+            "block_size": args.energy_block_size,
         },
         "output": str(output),
     }
@@ -1323,6 +1394,107 @@ def fit(args) -> Path:
         "in_sample_reconstruction": force_metrics(u, f, fc2, fc3, args.metric_samples),
         "peak_memory_MiB": peak_memory_mib(),
     }
+    with np.load(output / "symfc_input.npz") as saved:
+        saved_displacements = np.asarray(saved["displacements"], dtype=float)
+        saved_energies = (
+            np.asarray(saved["energies"], dtype=float)
+            if "energies" in saved
+            else None
+        )
+        saved_source_indices = np.asarray(saved["source_indices"], dtype=int)
+        saved_energy_field = (
+            str(np.asarray(saved["energy_field"]).item())
+            if "energy_field" in saved
+            else None
+        )
+    energy_requested = args.effective_energy_offset is True
+    energy_enabled = args.effective_energy_offset is not False and saved_energies is not None
+    if energy_requested and saved_energies is None:
+        raise ValueError(
+            "--effective-energy-offset was requested, but no consistently aligned potential-energy field was found"
+        )
+    if energy_enabled:
+        from .effective_energy import calculate_effective_energy_offset
+
+        stage(
+            "energy",
+            "Calculating U0_eff from the fitted FC2 and the exact displacements saved in symfc_input.npz",
+        )
+        matrix = np.asarray(summary["structure"]["supercell_matrix"], dtype=int)
+        energy_source = dict(summary["trajectory"].get("energy") or {})
+        energy_source["file"] = summary["trajectory"].get("path")
+        effective_energy = calculate_effective_energy_offset(
+            output=output,
+            displacements=saved_displacements,
+            energies=saved_energies,
+            fc2=fc2,
+            source_indices=saved_source_indices,
+            energy_field=saved_energy_field,
+            energy_metadata=energy_source,
+            primitive_cells_per_supercell=abs(round(float(np.linalg.det(matrix)))),
+            bootstrap_samples=args.energy_bootstrap_samples,
+            block_size=args.energy_block_size,
+            seed=args.seed,
+        )
+        effective_energy["software"] = versions()
+        effective_energy["inputs"] = {
+            "trajectory_sha256": summary["trajectory"].get("sha256"),
+            "selected_indices_sha256": sha256(output / "selected_indices.txt"),
+            "symfc_input_sha256": sha256(output / "symfc_input.npz"),
+            "fc2_sha256": sha256(output / "fc2.hdf5"),
+        }
+        effective_energy["model"].update(
+            {
+                "reference_structure": "POSCAR-unitcell",
+                "supercell_matrix": matrix.tolist(),
+                "center_selected": bool(args.center_selected),
+            }
+        )
+        energy_statistics = effective_energy["statistics"]
+        block_error = energy_statistics["block"]["standard_error_eV_supercell"]
+        error_text = "unavailable" if block_error is None else f"{block_error:.6g} eV"
+        stage(
+            "energy",
+            f"U0_eff={effective_energy['effective_energy_offset']['value_eV_supercell']:.12g} "
+            f"eV/supercell; block SEM={error_text}; "
+            f"effective sample size={energy_statistics['effective_sample_size']:.6g}",
+        )
+        mean_force = summary["dataset"]["centering"]["mean_force_max_atom_norm_eV_per_A"]
+        if mean_force > 0.05:
+            warning = (
+                "mean force before centering is large; a linear energy term may be required "
+                f"(maximum atom norm={mean_force:.6g} eV/A)"
+            )
+            effective_energy["warnings"].append(warning)
+        for warning in effective_energy["warnings"]:
+            stage("energy", f"WARNING: {warning}")
+        with (output / "tdep_energy_offset.yaml").open("w") as handle:
+            yaml.safe_dump(effective_energy, handle, sort_keys=False)
+        summary["effective_energy_offset"] = effective_energy
+        warning_count = len(effective_energy["warnings"])
+        stage(
+            "energy",
+            f"Wrote tdep_energy_offset.yaml, residual TSV and diagnostic plots "
+            f"({warning_count} warning{'s' if warning_count != 1 else ''})",
+        )
+    else:
+        for name in (
+            "tdep_energy_offset.yaml",
+            "tdep_energy_residuals.tsv",
+            "tdep_energy_diagnostics.pdf",
+            "tdep_energy_diagnostics.png",
+        ):
+            stale = output / name
+            if stale.is_file() or stale.is_symlink():
+                stale.unlink()
+        if args.effective_energy_offset is None:
+            stage(
+                "energy",
+                "No consistently aligned potential-energy field was found; effective-energy offset was skipped",
+            )
+        else:
+            stage("energy", "Effective-energy offset disabled by user")
+        summary["effective_energy_offset"] = None
     with (output / "symfc_summary.yaml").open("w") as handle:
         yaml.safe_dump(summary, handle, sort_keys=False)
     products = "FC2 and FC3" if fc3 is not None else "FC2"
@@ -1630,18 +1802,67 @@ def phonon(args, fit_dir: Path | None = None) -> Path:
         is_legacy_plot=True,
     )
     phonon.write_yaml_band_structure(filename=str(output / "band.yaml"))
-    stage("phonon", "Writing phonopy-band.dat with phonopy-bandplot --gnuplot")
-    write_phonopy_bandplot_data(output)
+    band = phonon.band_structure
+    stage("phonon", "Writing phonopy-band.dat in phonopy-bandplot gnuplot format")
+    write_phonopy_bandplot_data(output, band.distances, band.frequencies)
     figure = phonon.plot_band_structure()
     figure.savefig(output / "band.pdf")
     figure.savefig(output / "band.png", dpi=180)
     import matplotlib.pyplot as plt
 
     plt.close("all")
-    band = phonon.get_band_structure_dict()
     write_plain_phonon_band_dat(
-        output / "phonon_band.dat", band["distances"], band["frequencies"]
+        output / "phonon_band.dat", band.distances, band.frequencies
     )
+    mesh = tuple(int(value) for value in args.mesh)
+    mesh_tag = "x".join(str(value) for value in mesh)
+    stage("dos", f"Calculating total phonon DOS on the {mesh_tag} mesh")
+    phonon.run_mesh(mesh)
+    phonon.run_total_dos()
+    phonon.write_total_dos(filename=output / "phonon_dos.dat")
+    dos_plot = phonon.plot_total_dos(with_tight_frequency_range=True)
+    dos_plot.savefig(output / "phonon_dos.pdf")
+    dos_plot.savefig(output / "phonon_dos.png", dpi=180)
+    plt.close("all")
+    stage(
+        "thermal",
+        f"Calculating harmonic thermal properties from {args.tmin:g} to {args.tmax:g} K "
+        f"in {args.tstep:g} K steps",
+    )
+    phonon.run_thermal_properties(
+        t_min=args.tmin,
+        t_max=args.tmax,
+        t_step=args.tstep,
+        cutoff_frequency=args.frequency_cutoff,
+    )
+    phonon.write_yaml_thermal_properties(
+        filename=output / "thermal_properties.yaml"
+    )
+    thermal = phonon.thermal_properties
+    thermal_rows = np.column_stack(
+        (
+            thermal.temperatures,
+            thermal.free_energy,
+            thermal.entropy,
+            thermal.heat_capacity,
+        )
+    )
+    np.savetxt(
+        output / "thermal_properties.tsv",
+        thermal_rows,
+        delimiter="\t",
+        header=(
+            "temperature_K free_energy_kJ_per_mol "
+            "entropy_J_per_K_per_mol heat_capacity_J_per_K_per_mol"
+        ),
+        fmt="%.12g",
+    )
+    thermal_plot = phonon.plot_thermal_properties()
+    thermal_plot.savefig(output / "thermal_properties.pdf")
+    thermal_plot.savefig(output / "thermal_properties.png", dpi=180)
+    plt.close("all")
+    phonon.run_qpoints([[0, 0, 0]])
+    gamma_frequencies = np.asarray(phonon.qpoints.frequencies[0], dtype=float)
     groups: list[list[np.ndarray]] = [[segments[0][0], segments[0][-1]]]
     label_groups: list[list[str]] = [[labels[0][0], labels[0][1]]]
     for index, segment in enumerate(segments[1:], start=1):
@@ -1679,23 +1900,31 @@ def phonon(args, fit_dir: Path | None = None) -> Path:
         "spacegroup": phonon.symmetry.dataset.international,
         "spacegroup_number": int(phonon.symmetry.dataset.number),
         "supercell_matrix": np.asarray(matrix, dtype=int).tolist(),
-        "frequency_min_THz": float(np.min(np.concatenate(band["frequencies"]))),
-        "frequency_max_THz": float(np.max(np.concatenate(band["frequencies"]))),
+        "frequency_min_THz": float(np.min(np.concatenate(band.frequencies))),
+        "frequency_max_THz": float(np.max(np.concatenate(band.frequencies))),
         "imaginary_mode_points": int(
-            np.count_nonzero(np.concatenate(band["frequencies"]) < 0)
+            np.count_nonzero(np.concatenate(band.frequencies) < 0)
         ),
-        "gamma_frequencies_THz": np.asarray(
-            phonon.get_frequencies([0, 0, 0]), dtype=float
-        ).tolist(),
-        "gamma_acoustic_frequencies_THz": np.sort(
-            np.asarray(phonon.get_frequencies([0, 0, 0]), dtype=float)
-        )[:3].tolist(),
+        "gamma_frequencies_THz": gamma_frequencies.tolist(),
+        "gamma_acoustic_frequencies_THz": np.sort(gamma_frequencies)[:3].tolist(),
         "nac": {
             "enabled": has_nac,
             "born": str(born_source) if has_nac else None,
             "validation": nac_validation,
         },
         "masses": mass_summary,
+        "dos": {
+            "mesh": list(mesh),
+            "data": "phonon_dos.dat",
+        },
+        "thermal_properties": {
+            "mesh": list(mesh),
+            "temperature_min_K": float(args.tmin),
+            "temperature_max_K": float(args.tmax),
+            "temperature_step_K": float(args.tstep),
+            "frequency_cutoff_THz": float(args.frequency_cutoff),
+            "points": int(len(thermal.temperatures)),
+        },
         "inputs": {
             "FORCE_CONSTANTS_sha256": sha256(fit_dir / "FORCE_CONSTANTS"),
             "POSCAR_unitcell_sha256": sha256(fit_dir / "POSCAR-unitcell"),
